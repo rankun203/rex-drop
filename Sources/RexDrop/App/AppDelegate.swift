@@ -3,6 +3,7 @@ import AppKit
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPopoverDelegate {
     let preview = CommandLine.arguments.contains("--preview") || CommandLine.arguments.contains("--preview-paste") || isProgressPreview() || CommandLine.arguments.contains("--render-preview")
     var panel: DropPanel!
+    var fittedProgressWidth: CGFloat = 0
     var statusItem: NSStatusItem!
     var icon: StatusDropView!
     let popover = NSPopover()

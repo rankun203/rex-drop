@@ -57,7 +57,9 @@ Opening SSH folders uses a separate Rex window when Remote Control is enabled.
 With it disabled, the folder opens in a tab in the original session, without a settings warning.
 
 Two tasks can run concurrently. Progress shows transferred bytes, total bytes,
-and an overall percentage for both local copies and SSH uploads. Cancelled or failed
+and a determinate progress bar for both local copies and SSH uploads. The progress
+window expands to fit paths within the available screen width. You can resize it;
+rows fill its width and progress updates preserve your chosen size. Cancelled or failed
 transfers may leave a partial destination; retries start a fresh transfer and
 ask again about existing local names. Each task uses one row; actual errors add
 a second line with the explanation.

@@ -14,12 +14,12 @@ final class TransferTask {
     var fraction: Double?
     var completedBytes: Int64?
     var totalBytes: Int64?
-    var percentage: Int? {
+    var progressFraction: Double? {
         if let done = completedBytes, let total = totalBytes, total > 0 {
-            return Int(min(100, max(0, Double(max(0, done)) / Double(total) * 100)))
+            return min(1, max(0, Double(max(0, done)) / Double(total)))
         }
         guard let fraction, fraction.isFinite else { return nil }
-        return Int(min(100, max(0, fraction * 100)))
+        return min(1, max(0, fraction))
     }
     var progressText: String? {
         var pieces: [String] = []
@@ -29,7 +29,6 @@ final class TransferTask {
                 pieces.append(current + " / " + ByteCountFormatter.string(fromByteCount: total, countStyle: .file))
             } else { pieces.append(current) }
         }
-        if let percentage { pieces.append("\(percentage)%") }
         return pieces.isEmpty ? nil : pieces.joined(separator: " · ")
     }
     var error = ""

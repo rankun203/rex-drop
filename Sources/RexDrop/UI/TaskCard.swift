@@ -21,7 +21,7 @@ final class TaskCard: NSView {
         detail.font = .systemFont(ofSize: 11); detail.textColor = .systemOrange
         detail.maximumNumberOfLines = 3; detail.lineBreakMode = .byWordWrapping; detail.isSelectable = true
         bar.style = .bar; bar.controlSize = .small; bar.minValue = 0; bar.maxValue = 1
-        bar.widthAnchor.constraint(equalToConstant: 40).isActive = true
+        bar.widthAnchor.constraint(equalToConstant: 80).isActive = true
         progressLabel.font = .monospacedDigitSystemFont(ofSize: 10, weight: .regular)
         progressLabel.textColor = .secondaryLabelColor
         progressLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
@@ -74,9 +74,9 @@ final class TaskCard: NSView {
         let showProgress = [.running, .queued, .paused].contains(task.state)
         progressLabel.stringValue = task.progressText ?? ""
         progressLabel.isHidden = !showProgress || task.progressText == nil
-        bar.isHidden = ![.running, .queued].contains(task.state) || task.progressText != nil
-        bar.isIndeterminate = task.state == .running && task.fraction == nil
-        if bar.isIndeterminate { bar.startAnimation(nil) } else { bar.stopAnimation(nil); bar.doubleValue = task.fraction ?? 0 }
+        bar.isHidden = !showProgress
+        bar.isIndeterminate = false
+        bar.stopAnimation(nil); bar.doubleValue = task.progressFraction ?? 0
         let symbol: String
         switch task.state {
         case .complete: symbol = "checkmark.circle.fill"

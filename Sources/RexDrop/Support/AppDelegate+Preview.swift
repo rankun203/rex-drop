@@ -44,7 +44,9 @@ extension AppDelegate {
             host = NSPanel(contentRect: NSRect(origin: .zero, size: popover.contentSize), styleMask: .borderless, backing: .buffered, defer: false)
             view.wantsLayer = true; view.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor; host.contentView = view
         }
-        host.orderFrontRegardless(); view.layoutSubtreeIfNeeded(); host.displayIfNeeded()
+        // A headless renderer has no screen to constrain a resizable window to.
+        if !NSScreen.screens.isEmpty { host.orderFrontRegardless() }
+        view.layoutSubtreeIfNeeded(); host.displayIfNeeded()
         guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { throw DropFailure("Preview bitmap unavailable.") }
         view.cacheDisplay(in: view.bounds, to: bitmap)
         guard let data = bitmap.representation(using: .png, properties: [:]) else { throw DropFailure("Preview PNG unavailable.") }

@@ -10,7 +10,8 @@ extension AppDelegate {
         return height
     }
     func makePanel() {
-        panel = DropPanel(contentRect: NSRect(x: 0, y: 0, width: 400, height: 155), styleMask: [.titled, .closable, .nonactivatingPanel, .fullSizeContentView], backing: .buffered, defer: false)
+        panel = DropPanel(contentRect: NSRect(x: 0, y: 0, width: 600, height: 155), styleMask: [.titled, .closable, .resizable, .nonactivatingPanel, .fullSizeContentView], backing: .buffered, defer: false)
+        panel.minSize = NSSize(width: 400, height: 90)
         panel.title = "Rex Drop"; panel.titleVisibility = .hidden; panel.titlebarAppearsTransparent = true
         panel.delegate = self; panel.isFloatingPanel = true; panel.level = .floating
         panel.hidesOnDeactivate = false; panel.isReleasedWhenClosed = false; panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
@@ -21,6 +22,7 @@ extension AppDelegate {
         let container = NSView(); root.addSubview(container); container.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([container.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 12), container.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -12), container.topAnchor.constraint(equalTo: root.topAnchor, constant: 34), container.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -12)])
         listHeight = installScroll(scroll, stack: list, in: container, inset: 0)
+        listHeight.priority = .defaultLow
         panel.center()
     }
     func makePopover() {
@@ -70,10 +72,24 @@ extension AppDelegate {
     }
     func resizeProgressPanel() {
         let height = min(CGFloat(430), max(CGFloat(44), tasks.reduce(CGFloat(0)) { $0 + $1.preferredHeight } + CGFloat(max(0, tasks.count - 1) * 7)))
-        guard listHeight.constant != height else { return }
-        listHeight.constant = height
         let old = panel.frame
-        panel.setFrame(NSRect(x: old.minX, y: old.maxY - height - 46, width: old.width, height: height + 46), display: true)
+        let screen = panel.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1920, height: 1080)
+        let availableWidth = max(300, screen.width - 32)
+        // Reserve controls and byte counts, then fit the widest path. Grow while
+        // transferring so changing byte labels never make the window jitter.
+        let titleWidth = cards.values.map { card in
+            (card.title.stringValue as NSString).size(withAttributes: [.font: card.title.font!]).width
+        }.max() ?? 0
+        let desiredWidth = min(availableWidth, max(600, ceil(titleWidth) + 310))
+        let newContent = desiredWidth != fittedProgressWidth
+        let newHeight = listHeight.constant != height
+        guard newContent || newHeight else { return }
+        let width = newContent ? min(availableWidth, max(old.width, desiredWidth)) : old.width
+        let windowHeight = newHeight ? height + 46 : old.height
+        fittedProgressWidth = desiredWidth
+        listHeight.constant = height
+        let x = max(screen.minX + 16, min(old.midX - width / 2, screen.maxX - width - 16))
+        panel.setFrame(NSRect(x: x, y: old.maxY - windowHeight, width: width, height: windowHeight), display: true)
         panel.contentView?.layoutSubtreeIfNeeded()
     }
 }

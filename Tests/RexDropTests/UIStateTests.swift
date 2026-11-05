@@ -66,11 +66,11 @@ struct UIStateTests {
         #expect(task.progressText == nil)
         task.completedBytes = 12_000_000; task.totalBytes = 40_000_000
         task.fraction = 0.9
-        #expect(task.percentage == 30)
-        #expect(task.progressText?.contains("30%") == true)
+        #expect(task.progressFraction == 0.3)
+        #expect(task.progressText?.contains("%") == false)
         #expect(task.progressText?.contains("/") == true)
         task.completedBytes = 50_000_000
-        #expect(task.percentage == 100)
+        #expect(task.progressFraction == 1)
         task.completedBytes = nil; task.totalBytes = nil; task.fraction = .nan
         #expect(task.progressText == nil)
     }
@@ -88,6 +88,28 @@ struct UIStateTests {
         #expect(row.pasteButton.image != nil)
         #expect(row.pasteButton.title.isEmpty)
         #expect(row.pasteButton.isEnabled)
+    }
+
+    @Test @MainActor
+    func testProgressBarAndUserResizedWindow() {
+        _ = NSApplication.shared
+        let owner = AppDelegate()
+        owner.makePanel()
+        defer { owner.panel.close() }
+        let task = TransferTask(target: ["destination_display": "dev@example:/tmp"], paths: ["/example/image.png"])
+        task.state = .running; task.completedBytes = 30; task.totalBytes = 100
+        owner.tasks = [task]; owner.renderContent()
+        let frame = NSRect(x: 50, y: 50, width: 700, height: 230)
+        owner.panel.setFrame(frame, display: true)
+        owner.updateTask(task)
+        owner.panel.contentView?.layoutSubtreeIfNeeded()
+        #expect(owner.panel.frame.size == frame.size)
+        #expect(owner.panel.styleMask.contains(.resizable))
+        let card = owner.cards[task.id]!
+        #expect(!card.bar.isHidden && !card.bar.isIndeterminate)
+        #expect(card.bar.doubleValue == 0.3)
+        #expect(!card.progressLabel.stringValue.contains("%"))
+        #expect(abs(card.frame.width - owner.scroll.contentView.bounds.width) < 1)
     }
 
 }
