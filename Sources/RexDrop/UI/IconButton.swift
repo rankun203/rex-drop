@@ -28,7 +28,11 @@ final class IconButton: NSButton {
     override func draw(_ dirtyRect: NSRect) {
         if isEnabled && (hovering || isHighlighted) {
             NSColor.labelColor.withAlphaComponent(isHighlighted ? 0.18 : 0.08).setFill()
-            NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: 5, yRadius: 5).fill()
+            // AppKit's button alignment insets can make its drawing bounds taller
+            // than its layout size. Center a square independently of those bounds.
+            let side = min(26, min(bounds.width, bounds.height) - 2)
+            let square = NSRect(x: bounds.midX - side / 2, y: bounds.midY - side / 2, width: side, height: side)
+            NSBezierPath(roundedRect: square, xRadius: 5, yRadius: 5).fill()
         }
         super.draw(dirtyRect)
     }
