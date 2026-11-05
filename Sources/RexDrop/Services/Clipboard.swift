@@ -71,7 +71,7 @@ enum ClipboardInput {
             if let converted { png = converted }
             else if types.contains(.png) || types.contains(.tiff) || types.contains(jpeg) {
                 throw ClipboardFailure("The clipboard image could not be decoded. Copy the image again.")
-            } else { throw ClipboardFailure("Copy files, folders, or an image before choosing Paste.") }
+            } else { throw ClipboardFailure("The clipboard does not contain an image or copied files.") }
         }
         var template = Array(FileManager.default.temporaryDirectory.appendingPathComponent("rex-drop-clipboard.XXXXXXXX").path.utf8CString)
         guard let created = mkdtemp(&template) else { throw ClipboardFailure("Could not create a private clipboard image directory.") }

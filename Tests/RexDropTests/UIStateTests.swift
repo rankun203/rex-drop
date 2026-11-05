@@ -112,4 +112,15 @@ struct UIStateTests {
         #expect(abs(card.frame.width - owner.scroll.contentView.bounds.width) < 1)
     }
 
+    @Test @MainActor
+    func testUnsupportedClipboardClickStaysOnPasteButton() {
+        let owner = AppDelegate()
+        let row = TargetRow(target: ["kind": "ssh", "destination_display": "dev@example:/tmp"], owner: owner, clipboardAvailable: false)
+        let host = NSView(frame: NSRect(x: 0, y: 0, width: 380, height: 65))
+        host.addSubview(row); row.frame = host.bounds; row.layoutSubtreeIfNeeded()
+        #expect(row.pasteButton.isEnabled)
+        let point = NSPoint(x: row.pasteButton.frame.midX, y: row.pasteButton.frame.midY)
+        #expect(row.hitTest(point) === row.pasteButton)
+    }
+
 }

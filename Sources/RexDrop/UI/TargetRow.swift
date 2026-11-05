@@ -59,7 +59,11 @@ final class TargetRow: NSView {
         updateClipboard()
     }
     func updateClipboard() {
-        pasteButton.isEnabled = owner?.preview != true && (clipboardAvailability ?? ClipboardInput.canPaste(board: .general))
+        // Keep the action available so unsupported content gets paste feedback
+        // instead of letting the click reach the destination row.
+        pasteButton.isEnabled = owner?.preview != true
+        let available = clipboardAvailability ?? ClipboardInput.canPaste(board: .general)
+        pasteButton.contentTintColor = available ? .secondaryLabelColor : .tertiaryLabelColor
     }
     @objc func pasteClipboard() { owner?.pasteClipboard(to: target) }
     override func hitTest(_ point: NSPoint) -> NSView? {
