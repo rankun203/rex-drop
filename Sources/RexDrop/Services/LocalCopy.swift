@@ -29,6 +29,26 @@ extension DropService {
         return result
     }
 
+    static func sourceByteCount(_ paths: [String], control: DropTaskControl) throws -> Int64 {
+        var total: Int64 = 0
+        func count(_ path: String) throws {
+            try control.checkpoint()
+            guard let metadata = info(path) else { throw DropFailure("A dropped item became unavailable.") }
+            if metadata.st_mode & S_IFMT == S_IFREG {
+                let (sum, overflow) = total.addingReportingOverflow(max(0, metadata.st_size))
+                guard !overflow else { throw DropFailure("The selected files are too large to count.") }
+                total = sum
+            } else if metadata.st_mode & S_IFMT == S_IFDIR {
+                for name in try FileManager.default.contentsOfDirectory(atPath: path) {
+                    try count((path as NSString).appendingPathComponent(name))
+                }
+            }
+            // rsync -l transfers the link itself, never its target's contents.
+        }
+        for path in paths { try count(path) }
+        return total
+    }
+
     static func copyLocal(_ paths: [String], directory: String,
                           control: DropTaskControl = DropTaskControl(),
                           progress: @escaping (DropProgress) -> Void = { _ in },
@@ -110,7 +130,8 @@ extension DropService {
             let fraction = totalBytes > 0 ? min(1, Double(completedBytes) / Double(totalBytes)) :
                 (totalFiles > 0 ? Double(completedFiles) / Double(totalFiles) : 0)
             progress(DropProgress(phase: "Copying", currentFile: (path as NSString).lastPathComponent,
-                                  completedFiles: completedFiles, totalFiles: totalFiles, fraction: fraction))
+                                  completedFiles: completedFiles, totalFiles: totalFiles, fraction: fraction,
+                                  completedBytes: completedBytes, totalBytes: totalBytes))
         }
         func copy(_ source: String, _ destination: String) throws {
             try control.checkpoint()
@@ -181,7 +202,8 @@ extension DropService {
             for index in paths.indices {
                 try control.checkpoint()
                 progress(DropProgress(phase: "Publishing", currentFile: (destinations[index] as NSString).lastPathComponent,
-                                      completedFiles: completedFiles, totalFiles: totalFiles, fraction: 1))
+                                      completedFiles: completedFiles, totalFiles: totalFiles, fraction: 1,
+                                      completedBytes: completedBytes, totalBytes: totalBytes))
                 try control.checkpoint()
                 if collisionPolicy == .replace && info(destinations[index]) != nil {
                     if let existing = info(destinations[index]), unsafeReplacement(destinations[index], existing) {
@@ -198,7 +220,8 @@ extension DropService {
                         throw DropFailure("A replacement became a dropped source. Choose Keep Both.")
                     }
                     progress(DropProgress(phase: "Replacing", currentFile: (destinations[index] as NSString).lastPathComponent,
-                                          completedFiles: completedFiles, totalFiles: totalFiles, fraction: 1))
+                                          completedFiles: completedFiles, totalFiles: totalFiles, fraction: 1,
+                                          completedBytes: completedBytes, totalBytes: totalBytes))
                     try control.checkpoint()
                 }
                 guard let identity = info(stagedPaths[index]) else { throw DropFailure("A staged item became unavailable.") }

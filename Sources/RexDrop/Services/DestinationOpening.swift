@@ -33,26 +33,41 @@ extension DropService {
         let interactiveOptions = ["ConnectTimeout=10", "RemoteCommand=none", "SessionType=default",
                                   "StdinNull=no", "ForkAfterAuthentication=no", "ClearAllForwardings=yes",
                                   "PermitLocalCommand=no"].flatMap { ["-o", $0] }
-        let command = [try rexBinary(), "--autostart=false", "window", "new", "-s", sid,
-                       directory == "/tmp" ? "Remote /tmp" : "Uploaded files", "--shell=none", "--keep-open", "--json", "--", Self.ssh, "-t"] +
-            interactiveOptions + args + [remoteCommand]
-        let created = try execute(command, 15, Self.localEnvironment())
-        guard let window = (try? JSONSerialization.jsonObject(with: created)) as? [String: Any],
-              let wid = window["window_id"] as? String,
-              let clientsData = try? execute([rexBinary(), "--autostart=false", "client", "ls", "--json"], 15, Self.localEnvironment()),
-              let object = (try? JSONSerialization.jsonObject(with: clientsData)) as? [String: Any],
-              let clients = object["clients"] as? [[String: Any]] else { return }
+        let rex = try rexBinary()
+        let environment = Self.localEnvironment()
+        let clientsData = try execute([rex, "--autostart=false", "client", "ls", "--json"], 15, environment)
+        let object = try JSONSerialization.jsonObject(with: clientsData) as? [String: Any]
+        let clients = object?["clients"] as? [[String: Any]] ?? []
         let localApps = clients.filter { client in
             guard let info = client["info"] as? [String: Any], let principal = client["principal"] as? [String: Any] else { return false }
             return info["kind"] as? String == "app" && info["platform"] as? String == "macos" &&
                 principal["transport"] as? String == "unix" && (principal["uid"] as? NSNumber)?.uint32Value == getuid() &&
                 client["connection_state"] as? String == "connected"
         }
-        // Selecting a client is safe only when one local Mac app is identified.
-        // The created tab remains in the original session if clients are ambiguous.
-        if localApps.count == 1, let client = localApps.first?["client_id"] as? String {
-            _ = try execute([rexBinary(), "--autostart=false", "-C", client, "do", "session.select",
-                             "session_id=" + sid, "window_id=" + wid], 15, Self.localEnvironment())
+        guard localApps.count == 1, let client = localApps.first?["client_id"] as? String else {
+            throw DropFailure("Open one local Rex app to browse this folder.")
+        }
+        // Ask for the native window first: disabled Remote Control must not
+        // leave an SSH tab behind on every attempted click.
+        do {
+            _ = try execute([rex, "--autostart=false", "-C", client, "do", "client.window.new"], 15, environment)
+        } catch {
+            throw DropFailure("Rex could not open a window. Enable Remote Control in Rex Settings → Rex Server and try again.")
+        }
+        let command = [rex, "--autostart=false", "new", "Rex Drop", "--window",
+                       directory == "/tmp" ? "Remote /tmp" : "Uploaded files",
+                       "--shell=none", "--keep-open", "--json", "--", Self.ssh, "-t"] +
+            interactiveOptions + args + [remoteCommand]
+        let created = try execute(command, 15, environment)
+        guard let session = try JSONSerialization.jsonObject(with: created) as? [String: Any],
+              let newSession = session["session_id"] as? String else {
+            throw DropFailure("Rex created the window but did not return its session.")
+        }
+        do {
+            _ = try execute([rex, "--autostart=false", "-C", client, "do", "session.select",
+                             "session_id=" + newSession], 15, environment)
+        } catch {
+            throw DropFailure("The SSH terminal was created in the Rex Drop session. Select that session in Rex to view it.")
         }
     }
 }

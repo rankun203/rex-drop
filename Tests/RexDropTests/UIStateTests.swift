@@ -59,4 +59,35 @@ struct UIStateTests {
         task.state = .failed
         #expect(task.preferredHeight > 44)
     }
+
+    @Test
+    func testRealByteProgressUsesAggregateCounts() {
+        let task = TransferTask(target: [:], paths: [])
+        #expect(task.progressText == nil)
+        task.completedBytes = 12_000_000; task.totalBytes = 40_000_000
+        task.fraction = 0.9
+        #expect(task.percentage == 30)
+        #expect(task.progressText?.contains("30%") == true)
+        #expect(task.progressText?.contains("/") == true)
+        task.completedBytes = 50_000_000
+        #expect(task.percentage == 100)
+        task.completedBytes = nil; task.totalBytes = nil; task.fraction = .nan
+        #expect(task.progressText == nil)
+    }
+
+    @Test @MainActor
+    func testLongDestinationKeepsIconControlsInsideRow() {
+        let owner = AppDelegate()
+        let row = TargetRow(target: ["kind": "ssh", "destination_display": String(repeating: "long-destination/", count: 30)], owner: owner, clipboardAvailable: true)
+        row.frame = NSRect(x: 0, y: 0, width: 380, height: 65)
+        row.layoutSubtreeIfNeeded()
+        #expect(row.title.frame.width > 100)
+        #expect(row.title.frame.maxX <= row.pasteButton.frame.minX)
+        #expect(row.pasteButton.frame.maxX <= row.openIcon.frame.minX)
+        #expect(row.openIcon.frame.maxX <= row.bounds.maxX)
+        #expect(row.pasteButton.image != nil)
+        #expect(row.pasteButton.title.isEmpty)
+        #expect(row.pasteButton.isEnabled)
+    }
+
 }

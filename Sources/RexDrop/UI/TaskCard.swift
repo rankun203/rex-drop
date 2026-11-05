@@ -7,6 +7,7 @@ final class TaskCard: NSView {
     let detail = NSTextField(wrappingLabelWithString: "")
     let bar = NSProgressIndicator()
     let status = NSImageView()
+    let progressLabel = NSTextField(labelWithString: "")
     let pause = NSButton(), cancel = NSButton()
     let keepBoth = NSButton(title: "Keep Both", target: nil, action: nil)
     let replace = NSButton(title: "Replace", target: nil, action: nil)
@@ -21,6 +22,9 @@ final class TaskCard: NSView {
         detail.maximumNumberOfLines = 3; detail.lineBreakMode = .byWordWrapping; detail.isSelectable = true
         bar.style = .bar; bar.controlSize = .small; bar.minValue = 0; bar.maxValue = 1
         bar.widthAnchor.constraint(equalToConstant: 40).isActive = true
+        progressLabel.font = .monospacedDigitSystemFont(ofSize: 10, weight: .regular)
+        progressLabel.textColor = .secondaryLabelColor
+        progressLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
         status.widthAnchor.constraint(equalToConstant: 13).isActive = true
         status.heightAnchor.constraint(equalToConstant: 13).isActive = true
         for button in [pause, cancel] { button.isBordered = false; button.contentTintColor = .secondaryLabelColor; button.widthAnchor.constraint(equalToConstant: 19).isActive = true }
@@ -28,7 +32,7 @@ final class TaskCard: NSView {
         keepBoth.target = self; keepBoth.action = #selector(keepAction); keepBoth.toolTip = "Keep all existing destination items; copy duplicates with numbered names"
         replace.target = self; replace.action = #selector(replaceAction); replace.toolTip = "Replace all matching destination files and whole folders"
         pause.target = self; pause.action = #selector(primaryAction); cancel.target = self; cancel.action = #selector(secondaryAction)
-        let head = NSStackView(views: [title, NSView(), bar, status, pause, keepBoth, replace, cancel]); head.spacing = 5; head.alignment = .centerY
+        let head = NSStackView(views: [title, NSView(), bar, progressLabel, status, pause, keepBoth, replace, cancel]); head.spacing = 5; head.alignment = .centerY
         title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         let column = NSStackView(views: [head, detail]); column.orientation = .vertical; column.alignment = .leading; column.spacing = 6
         addSubview(column); column.translatesAutoresizingMaskIntoConstraints = false
@@ -67,7 +71,10 @@ final class TaskCard: NSView {
         }
         if task.state == .failed { toolTip = task.error }
         if task.state == .complete { toolTip = (toolTip ?? "") + "\n⌘-click to open destination" }
-        bar.isHidden = ![.running, .queued].contains(task.state)
+        let showProgress = [.running, .queued, .paused].contains(task.state)
+        progressLabel.stringValue = task.progressText ?? ""
+        progressLabel.isHidden = !showProgress || task.progressText == nil
+        bar.isHidden = ![.running, .queued].contains(task.state) || task.progressText != nil
         bar.isIndeterminate = task.state == .running && task.fraction == nil
         if bar.isIndeterminate { bar.startAnimation(nil) } else { bar.stopAnimation(nil); bar.doubleValue = task.fraction ?? 0 }
         let symbol: String

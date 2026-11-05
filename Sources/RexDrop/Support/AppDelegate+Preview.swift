@@ -9,13 +9,21 @@ extension AppDelegate {
             ["id": "ssh-b", "display_name": "dev@staging", "destination_display": "dev@staging:/tmp", "kind": "ssh"],
             ["id": "local-a", "display_name": "website", "destination_display": "~/Projects/website", "kind": "local"]
         ])
+        if CommandLine.arguments.contains("--preview-long-paths") {
+            applyTargets([
+                ["id": "long-ssh", "kind": "ssh", "destination_display": "developer@development-cluster.production.example.test:2222:/tmp"],
+                ["id": "long-local", "kind": "local", "destination_display": "~/Projects/client-work/very-long-project-name/design/assets/production"]
+            ])
+        }
         if isProgressPreview() {
+
             let first = TransferTask(target: targets[0], paths: ["/example/design-assets"])
             first.state = .running; first.currentFile = "hero-image.png"; first.completedFiles = 3; first.totalFiles = 8
+            first.completedBytes = 12_000_000; first.totalBytes = 40_000_000; first.fraction = 0.3
             let second = TransferTask(target: targets[1], paths: ["/example/notes.md"]); second.state = .complete
             tasks = [first, second]
             if CommandLine.arguments.contains("--preview-conflict") {
-                let conflict = TransferTask(target: targets[2], paths: ["/example/logo.svg"])
+                let conflict = TransferTask(target: targets.last!, paths: ["/example/logo.svg"])
                 conflict.state = .conflict; conflict.conflicts = ["~/Projects/website/logo.svg"]
                 tasks = [conflict]
             }

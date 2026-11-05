@@ -58,7 +58,8 @@ private final class FakeRex {
     var processes: [String: [String: Any]] = [:]
     var argvByPID: [Int32: [String]] = [:]
     var sshConfigurations: [String: String] = [:]
-    var clients: [[String: Any]] = []
+    var failWindow = false
+    var clients: [[String: Any]] = [["client_id": "client:local", "info": ["kind": "app", "platform": "macos"], "principal": ["transport": "unix", "uid": getuid()], "connection_state": "connected"]]
 
     func panes(_ definitions: [(String, Int32, String, String)], focused: String? = nil) {
         sessionsOverride = [["session_id": "session:one", "label": "Test session"]]
@@ -85,10 +86,11 @@ private final class FakeRex {
             if failRsync { throw TestFailureForCommand() }
             return Data()
         }
-        if command.count > 2 && command[2] == "send" { return Data() }
-        if command.count > 3 && command[2] == "window" && command[3] == "new" {
-            return try JSONSerialization.data(withJSONObject: ["window_id": "window:uploaded"])
+        if command.count > 2 && command[2] == "new" {
+            return try JSONSerialization.data(withJSONObject: ["session_id": "session:browse"])
         }
+        if command.contains("client.window.new") { if failWindow { throw TestFailureForCommand() }; return Data() }
+        if command.count > 2 && command[2] == "send" { return Data() }
         if command.count > 3 && command[2] == "client" && command[3] == "ls" {
             return try JSONSerialization.data(withJSONObject: ["clients": clients])
         }
@@ -732,8 +734,8 @@ struct BackendTests {
     func testOpenRemoteDestination() throws {
         let fake = FakeRex()
         try fake.service().openRemoteDestination(remoteMetadata())
-        let command = fake.calls[0]
-        try expect(Array(command.prefix(6)) == ["/test/rex", "--autostart=false", "window", "new", "-s", "session:original"], "Remote tab targeted another session")
+        let command = fake.calls.first { $0.count > 2 && $0[2] == "new" }!
+        try expect(Array(command.prefix(4)) == ["/test/rex", "--autostart=false", "new", "Rex Drop"], "Remote folder should use a dedicated session")
         try expect(command.contains("--shell=none") && command.contains("--keep-open") && command.contains("--json"), "Remote tab should execute exact argv and retain connection errors")
         guard let separator = command.firstIndex(of: "--") else { throw TestFailure("Command boundary missing") }
         let ssh = Array(command.dropFirst(separator + 1))
@@ -754,10 +756,17 @@ struct BackendTests {
         let fake = FakeRex(); fake.clients = [app]
         try fake.service().openRemoteDestination(remoteMetadata())
         try expect(fake.calls.last == ["/test/rex", "--autostart=false", "-C", "client:local", "do", "session.select",
-                                      "session_id=session:original", "window_id=window:uploaded"], "Created tab was not selected on the identified Mac app")
+                                      "session_id=session:browse"], "Created tab was not selected on the identified Mac app")
         let ambiguous = FakeRex(); ambiguous.clients = [app, app]
-        try ambiguous.service().openRemoteDestination(remoteMetadata())
+        try expectThrows("Open one local Rex") { try ambiguous.service().openRemoteDestination(remoteMetadata()) }
         try expect(!ambiguous.calls.contains { $0.contains("session.select") }, "Ambiguous local clients should retain their selected session")
+    }
+
+    @Test
+    func testDisabledRemoteControlCreatesNoTerminal() throws {
+        let fake = FakeRex(); fake.failWindow = true
+        try expectThrows("Remote Control") { try fake.service().openRemoteDestination(remoteMetadata()) }
+        try expect(!fake.calls.contains { $0.count > 2 && $0[2] == "new" }, "Disabled window control left a terminal behind")
     }
 
     @Test
@@ -907,7 +916,7 @@ struct BackendTests {
                    "Local folder lookup started a transfer or exposed SSH options")
         fake.cwd = "/different/project"
         try expectThrows("changed") { _ = try service.destinationToOpen(target) }
-        try expect(!fake.calls.contains { $0.count > 3 && $0[2] == "window" && $0[3] == "new" },
+        try expect(!fake.calls.contains { $0.count > 2 && $0[2] == "new" },
                    "Stale destination opened a new terminal")
     }
 
@@ -923,7 +932,7 @@ struct BackendTests {
                    "SSH destination lookup lost the validated session or connection options")
         try expect(target["ssh_args"] == nil, "Private SSH options leaked into destination discovery")
         try service.openRemoteDestination(metadata)
-        guard let command = fake.calls.first(where: { $0.count > 3 && $0[2] == "window" && $0[3] == "new" }) else {
+        guard let command = fake.calls.first(where: { $0.count > 2 && $0[2] == "new" }) else {
             throw TestFailure("SSH browsing did not open a Rex tab")
         }
         let shell = DropService.shellWords(command.last ?? "") ?? []
@@ -942,6 +951,85 @@ struct BackendTests {
             var metadata = remoteMetadata(); metadata["directory"] = directory
             try expectThrows("unavailable") { try fake.service().openRemoteDestination(metadata) }
             try expect(fake.calls.isEmpty, "Arbitrary browsing path reached an external command")
+        }
+    }
+
+    @Test
+    func testRemoteProgressAggregatesActualRsyncFileCounters() throws {
+        var tracker = RemoteProgressTracker(totalBytes: 327_683, totalFiles: 2)
+        let output = """
+        REX-DROP:first.bin
+                 163840  83%  159.51KB/s   00:00:00\r         196608 100%  191.31KB/s   00:00:01 (xfer#1, to-check=0/5)
+                 196608 100%  191.31KB/s   00:00:01 (xfer#1, to-check=0/5)
+        REX-DROP:folder/
+        REX-DROP:folder/a file.bin
+                  98,304  75%   95.96KB/s   00:00:00\r         131,072 100%  127.90KB/s   00:00:01 (xfer#2, to-check=2/5)
+        REX-DROP:folder/last.txt
+                       3 100%   26.83KB/s   00:00:00 (xfer#3, to-check=3/5)
+        REX-DROP:folder/link
+        """
+        let bytes = Array(output.utf8)
+        var updates: [DropProgress] = []
+        for start in stride(from: 0, to: bytes.count, by: 7) {
+            updates += tracker.consume(Data(bytes[start..<min(start + 7, bytes.count)]))
+        }
+        updates += tracker.finish()
+        var previous: Int64 = 0
+        for update in updates {
+            guard let completed = update.completedBytes, let total = update.totalBytes else { throw TestFailure("Byte totals missing") }
+            try expect(completed >= previous && completed <= total, "Aggregate counters reset at a file boundary or double-counted completion")
+            try expect(abs((update.fraction ?? -1) - Double(completed) / Double(total)) < 0.000001,
+                       "Percentage describes one file rather than the aggregate bytes")
+            previous = completed
+        }
+        try expect(updates.contains { $0.currentFile == "folder/a file.bin" && $0.completedBytes == 294_912 },
+                   "Second file counter omitted the first file's completed bytes")
+        try expect(updates.last?.completedBytes == 327_683 && updates.last?.fraction == 1, "Upload totals are inaccurate")
+    }
+
+    @Test
+    func testLocalByteTotalsExcludeSymlinkTargets() throws {
+        try temporary { root in
+            let source = root.appendingPathComponent("source"), destination = root.appendingPathComponent("destination")
+            try mkdir(source); try mkdir(destination)
+            let file = source.appendingPathComponent("item"), nested = source.appendingPathComponent("folder")
+            try Data(repeating: 65, count: 700_000).write(to: file); try mkdir(nested)
+            try write("abc", to: nested.appendingPathComponent("nested"))
+            let outside = root.appendingPathComponent("outside")
+            try Data(repeating: 65, count: 1_000_000).write(to: outside)
+            try FileManager.default.createSymbolicLink(atPath: nested.appendingPathComponent("link").path, withDestinationPath: outside.path)
+            try expect(try DropService.sourceByteCount([file.path, nested.path], control: DropTaskControl()) == 700_003,
+                       "Upload preflight counted a symlink target's contents")
+            var updates: [DropProgress] = []
+            _ = try DropService.copyLocal([file.path, nested.path], directory: destination.path, progress: { updates.append($0) })
+            let bytes = updates.compactMap(\.completedBytes)
+            try expect(bytes == bytes.sorted() && bytes.last == 700_003, "Local byte progress omitted or reset copied content")
+            try expect(updates.filter { $0.completedBytes != nil }.allSatisfy { $0.totalBytes == 700_003 },
+                       "Local byte denominator changed across files")
+        }
+    }
+
+    @Test
+    func testNativeRsyncOutputProducesAggregateBytes() throws {
+        try temporary { root in
+            let source = root.appendingPathComponent("source"), destination = root.appendingPathComponent("destination")
+            try mkdir(source); try mkdir(destination)
+            try write("abc", to: source.appendingPathComponent("sent unusual name.txt"))
+            try write("12345", to: source.appendingPathComponent("z file.txt"))
+            var tracker = RemoteProgressTracker(totalBytes: 8, totalFiles: 1)
+            var updates: [DropProgress] = []
+            _ = try DropService.runControlled(["/usr/bin/rsync", "-rlt", "--progress", "--out-format=REX-DROP:%n", "--", source.path, destination.path + "/"],
+                                             10, nil, output: { updates += tracker.consume($0) })
+            try expect(updates.contains { $0.completedBytes == 3 } && updates.contains { $0.completedBytes == 8 },
+                       "Installed macOS rsync format did not produce real cumulative counters")
+            try expect(updates.compactMap(\.completedBytes) == updates.compactMap(\.completedBytes).sorted(),
+                       "Installed rsync counters reset across files")
+            updates += tracker.finish()
+            try expect(updates.last?.totalBytes == 8 && updates.last?.fraction == 1, "Native upload progress failed to complete")
+            var empty = RemoteProgressTracker(totalBytes: 0, totalFiles: 1)
+            _ = empty.consume(Data("REX-DROP:empty\n0 100% 0.00KB/s 00:00:00\n".utf8))
+            try expect(empty.finish().last?.completedBytes == 0 && empty.finish().last?.fraction == 1,
+                       "Zero-length uploads did not finish with valid counters")
         }
     }
 }

@@ -6,7 +6,7 @@ extension AppDelegate {
         task.conflicts = []
         task.attempt += 1; let attempt = task.attempt
         task.control = DropTaskControl(); task.started = false; task.state = .queued; task.error = ""; task.fraction = nil
-        task.currentFile = ""; task.completedFiles = 0; task.totalFiles = 0
+        task.currentFile = ""; task.completedFiles = 0; task.totalFiles = 0; task.completedBytes = nil; task.totalBytes = nil
         task.openDestination = nil; task.copiedPaths = []
         updateTask(task)
         let control = task.control, original = task.target, paths = task.paths, policy = task.collisionPolicy
@@ -34,6 +34,8 @@ extension AppDelegate {
                         guard task.attempt == attempt, task.state.active else { return }
                         task.phase = progress.phase; task.currentFile = progress.currentFile
                         task.completedFiles = progress.completedFiles; task.totalFiles = progress.totalFiles; task.fraction = progress.fraction
+                        if let bytes = progress.completedBytes { task.completedBytes = bytes }
+                        if let bytes = progress.totalBytes { task.totalBytes = bytes }
                         self?.updateTask(task)
                     }
                 })

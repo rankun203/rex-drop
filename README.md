@@ -44,17 +44,20 @@ when finished. The progress window stays hidden until a transfer starts.
    resulting paths into the captured Rex pane without pressing Enter.
    Successful SSH transfers also copy shell-quoted remote paths to the clipboard.
 5. ⌘-click a completed card to reveal the copied files in Finder. For SSH,
-   it opens a new Rex tab, connects using the captured SSH options, lists the
+   it opens a separate Rex window and session, connects using the captured SSH options, lists the
    upload folder with `ls -ltr` (newest last), and leaves an interactive shell there.
 
 Copy files in Finder or copy an image, then click the menu-bar icon. Each
-destination shows **Paste** while the clipboard contains supported content.
+destination shows a clipboard icon while the clipboard contains supported content.
 Paste starts the same transfer flow. Clipboard images become PNG files;
 temporary source images stay available for retries until their task is dismissed
 or the app quits. Clipboard content is read only when you click Paste.
 
-Two tasks can run concurrently. Local progress tracks copied bytes and entries;
-remote progress shows the current file's rsync progress. Cancelled or failed
+Opening SSH folders requires **Rex Settings → Rex Server → Remote Control**.
+Transfers and native drag reception work independently of that setting.
+
+Two tasks can run concurrently. Progress shows transferred bytes, total bytes,
+and an overall percentage for both local copies and SSH uploads. Cancelled or failed
 transfers may leave a partial destination; retries start a fresh transfer and
 ask again about existing local names. Each task uses one row; actual errors add
 a second line with the explanation.

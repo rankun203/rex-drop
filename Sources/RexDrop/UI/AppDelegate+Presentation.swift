@@ -3,10 +3,10 @@ import AppKit
 extension AppDelegate {
     func installScroll(_ scroll: NSScrollView, stack: NSStackView, in root: NSView, inset: CGFloat) -> NSLayoutConstraint {
         stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 7
-        scroll.drawsBackground = false; scroll.borderType = .noBorder; scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true; scroll.documentView = stack
+        scroll.drawsBackground = false; scroll.hasHorizontalScroller = false; scroll.horizontalScrollElasticity = .none; scroll.borderType = .noBorder; scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true; scroll.documentView = stack
         root.addSubview(scroll); scroll.translatesAutoresizingMaskIntoConstraints = false; stack.translatesAutoresizingMaskIntoConstraints = false
         let height = scroll.heightAnchor.constraint(equalToConstant: 100)
-        NSLayoutConstraint.activate([scroll.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: inset), scroll.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -inset), scroll.topAnchor.constraint(equalTo: root.topAnchor, constant: inset), scroll.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -inset), height, stack.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor), stack.trailingAnchor.constraint(equalTo: scroll.contentView.trailingAnchor), stack.topAnchor.constraint(equalTo: scroll.contentView.topAnchor), stack.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor)])
+        NSLayoutConstraint.activate([scroll.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: inset), scroll.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -inset), scroll.topAnchor.constraint(equalTo: root.topAnchor, constant: inset), scroll.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -inset), height, stack.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor), stack.topAnchor.constraint(equalTo: scroll.contentView.topAnchor), stack.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor)])
         return height
     }
     func makePanel() {
