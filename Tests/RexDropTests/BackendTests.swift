@@ -59,7 +59,13 @@ private final class FakeRex {
     var argvByPID: [Int32: [String]] = [:]
     var sshConfigurations: [String: String] = [:]
     var failWindow = false
-    var clients: [[String: Any]] = [["client_id": "client:local", "info": ["kind": "app", "platform": "macos"], "principal": ["transport": "unix", "uid": getuid()], "connection_state": "connected"]]
+    var attachmentDelay = 1
+    var newAttachedSessions = ["session:browse"]
+    var defaultWindows: [[String: Any]] = [["window_id": "window:blank"]]
+    var emptyInspectReads = 0
+    private var requestedNativeWindow = false
+    private var attachmentPolls = 0
+    var clients: [[String: Any]] = [["client_id": "client:local", "info": ["kind": "app", "platform": "macos"], "principal": ["transport": "unix", "uid": getuid()], "connection_state": "connected", "session_ids": ["session:original"]]]
 
     func panes(_ definitions: [(String, Int32, String, String)], focused: String? = nil) {
         sessionsOverride = [["session_id": "session:one", "label": "Test session"]]
@@ -87,15 +93,36 @@ private final class FakeRex {
             return Data()
         }
         if command.count > 2 && command[2] == "new" {
-            return try JSONSerialization.data(withJSONObject: ["session_id": "session:browse"])
+            throw TestFailure("Native window already owns a session; creating another session is premature")
         }
         if command.count > 3 && command[2] == "window" && command[3] == "new" {
             return try JSONSerialization.data(withJSONObject: ["window_id": "window:browse"])
         }
-        if command.contains("client.window.new") { if failWindow { throw TestFailureForCommand() }; return Data() }
+        if command.count > 3 && command[2] == "window" && command[3] == "close" { return Data() }
+        if command.count > 3 && command[2] == "session" && command[3] == "inspect" {
+            let windows = emptyInspectReads > 0 ? [] : defaultWindows
+            emptyInspectReads = max(0, emptyInspectReads - 1)
+            return try JSONSerialization.data(withJSONObject: ["session_id": command[4], "windows": windows,
+                                                               "active_window_id": windows.first?["window_id"] ?? NSNull()])
+        }
+        if command.count > 3 && command[2] == "session" && command[3] == "rename" { return Data() }
+        if command.contains("client.window.new") {
+            if failWindow { throw TestFailureForCommand() }
+            requestedNativeWindow = true; return Data()
+        }
         if command.count > 2 && command[2] == "send" { return Data() }
         if command.count > 3 && command[2] == "client" && command[3] == "ls" {
-            return try JSONSerialization.data(withJSONObject: ["clients": clients])
+            var visible = clients
+            if requestedNativeWindow {
+                attachmentPolls += 1
+                if attachmentPolls > attachmentDelay {
+                    for index in visible.indices {
+                        let previous = visible[index]["session_ids"] as? [String] ?? []
+                        visible[index]["session_ids"] = previous + newAttachedSessions
+                    }
+                }
+            }
+            return try JSONSerialization.data(withJSONObject: ["clients": visible])
         }
         if command.count > 5 && command[4] == "do" && command[5] == "session.select" { return Data() }
         guard command.count > 4, command[2] == "api", command[3] == "call" else {
@@ -737,8 +764,8 @@ struct BackendTests {
     func testOpenRemoteDestination() throws {
         let fake = FakeRex()
         try fake.service().openRemoteDestination(remoteMetadata())
-        let command = fake.calls.first { $0.count > 2 && $0[2] == "new" }!
-        try expect(Array(command.prefix(4)) == ["/test/rex", "--autostart=false", "new", "Rex Drop"], "Remote folder should use a dedicated session")
+        let command = fake.calls.first { $0.count > 3 && $0[2] == "window" && $0[3] == "new" }!
+        try expect(Array(command.prefix(6)) == ["/test/rex", "--autostart=false", "window", "new", "-s", "session:browse"], "SSH tab should use the native window's attached session")
         try expect(command.contains("--shell=none") && command.contains("--keep-open") && command.contains("--json"), "Remote tab should execute exact argv and retain connection errors")
         guard let separator = command.firstIndex(of: "--") else { throw TestFailure("Command boundary missing") }
         let ssh = Array(command.dropFirst(separator + 1))
@@ -755,11 +782,13 @@ struct BackendTests {
     @Test
     func testSelectOpenedRemoteWindow() throws {
         let app: [String: Any] = ["client_id": "client:local", "info": ["kind": "app", "platform": "macos"],
-                                 "principal": ["transport": "unix", "uid": getuid()], "connection_state": "connected"]
+                                 "principal": ["transport": "unix", "uid": getuid()], "connection_state": "connected", "session_ids": ["session:original"]]
         let fake = FakeRex(); fake.clients = [app]
         try fake.service().openRemoteDestination(remoteMetadata())
-        try expect(fake.calls.last == ["/test/rex", "--autostart=false", "-C", "client:local", "do", "session.select",
-                                      "session_id=session:browse"], "Created tab was not selected on the identified Mac app")
+        try expect(fake.calls.contains(["/test/rex", "--autostart=false", "window", "close", "-s", "session:browse", "window:blank"]),
+                   "Native window retained its empty starting tab")
+        try expect(!fake.calls.contains { $0.contains("session.select") || ($0.count > 2 && $0[2] == "new") },
+                   "Browse creation selected another session in the old window")
         let ambiguous = FakeRex(); ambiguous.clients = [app, app]
         try expectThrows("Open one local Rex") { try ambiguous.service().openRemoteDestination(remoteMetadata()) }
         try expect(!ambiguous.calls.contains { $0.contains("session.select") }, "Ambiguous local clients should retain their selected session")
@@ -776,6 +805,45 @@ struct BackendTests {
         let script = DropService.shellWords(command.last ?? "") ?? []
         try expect(script.last?.contains("cd '/tmp/rex-drop.Ab12Cd34' && ls -ltr") == true, "Fallback opened the wrong folder")
         try expect(!fake.calls.contains { $0.contains("session.select") }, "Fallback retried disabled client control")
+    }
+
+    @Test
+    func testNativeWindowWaitsForAttachmentAndInitialTab() throws {
+        let fake = FakeRex(); fake.emptyInspectReads = 1
+        try fake.service().openRemoteDestination(remoteMetadata(), readinessTimeout: 1)
+        let clientReads = fake.calls.filter { $0.count > 3 && $0[2] == "client" && $0[3] == "ls" }
+        let inspections = fake.calls.indices.filter { fake.calls[$0].count > 3 && fake.calls[$0][2] == "session" && fake.calls[$0][3] == "inspect" }
+        guard let tab = fake.calls.firstIndex(where: { $0.count > 3 && $0[2] == "window" && $0[3] == "new" }) else {
+            throw TestFailure("SSH tab missing")
+        }
+        try expect(clientReads.count >= 3 && inspections.count == 2 && inspections.allSatisfy { $0 < tab },
+                   "SSH creation raced the new native window's session or default tab")
+        try expect(fake.calls.filter { $0.contains("client.window.new") }.count == 1,
+                   "Readiness polling created another native window")
+        try expect(fake.calls.filter { $0.count > 3 && $0[2] == "window" && $0[3] == "close" }.count == 1,
+                   "Cleanup should close only the captured starting tab")
+    }
+
+    @Test
+    func testNativeWindowReadinessTimeoutFallsBackOnce() throws {
+        let fake = FakeRex(); fake.attachmentDelay = Int.max
+        try fake.service().openRemoteDestination(remoteMetadata(), readinessTimeout: 0.06)
+        let tabs = fake.calls.filter { $0.count > 3 && $0[2] == "window" && $0[3] == "new" }
+        try expect(tabs.count == 1 && tabs.first?[5] == "session:original", "Timeout did not fall back to the captured original session")
+        try expect(fake.calls.filter { $0.contains("client.window.new") }.count == 1,
+                   "Timeout spawned another native window")
+        try expect(!fake.calls.contains { $0.contains("session.select") || ($0.count > 3 && $0[2] == "window" && $0[3] == "close") },
+                   "Timeout altered an unrelated window or tab")
+    }
+
+    @Test
+    func testAmbiguousNativeAttachmentsPreserveAllTabs() throws {
+        let fake = FakeRex(); fake.attachmentDelay = 0; fake.newAttachedSessions = ["session:new-one", "session:new-two"]
+        try fake.service().openRemoteDestination(remoteMetadata(), readinessTimeout: 1)
+        let tabs = fake.calls.filter { $0.count > 3 && $0[2] == "window" && $0[3] == "new" }
+        try expect(tabs.count == 1 && tabs.first?[5] == "session:original", "Ambiguous new sessions should fall back to the original session")
+        try expect(!fake.calls.contains { $0.count > 3 && (($0[2] == "window" && $0[3] == "close") || ($0[2] == "session" && $0[3] == "rename")) },
+                   "Ambiguous attachment cleanup changed an unowned session")
     }
 
     @Test
@@ -941,7 +1009,7 @@ struct BackendTests {
                    "SSH destination lookup lost the validated session or connection options")
         try expect(target["ssh_args"] == nil, "Private SSH options leaked into destination discovery")
         try service.openRemoteDestination(metadata)
-        guard let command = fake.calls.first(where: { $0.count > 2 && $0[2] == "new" }) else {
+        guard let command = fake.calls.first(where: { $0.count > 3 && $0[2] == "window" && $0[3] == "new" }) else {
             throw TestFailure("SSH browsing did not open a Rex tab")
         }
         let shell = DropService.shellWords(command.last ?? "") ?? []

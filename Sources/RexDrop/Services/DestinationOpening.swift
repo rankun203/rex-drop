@@ -17,7 +17,7 @@ extension DropService {
         throw DropFailure("The selected destination is unavailable. Refresh destinations and try again.")
     }
 
-    func openRemoteDestination(_ metadata: [String: Any]) throws {
+    func openRemoteDestination(_ metadata: [String: Any], readinessTimeout: TimeInterval = 5) throws {
         guard metadata["kind"] as? String == "ssh",
               let directory = metadata["directory"] as? String,
               (directory == "/tmp" || Self.matches(directory, "^/tmp/rex-drop\\.[A-Za-z0-9]{8}$")),
@@ -47,31 +47,62 @@ extension DropService {
         guard localApps.count == 1, let client = localApps.first?["client_id"] as? String else {
             throw DropFailure("Open one local Rex app to browse this folder.")
         }
+        let previousSessions = Set(localApps.first?["session_ids"] as? [String] ?? [])
+        func openSSH(in session: String) throws -> Data {
+            try execute([rex, "--autostart=false", "window", "new", "-s", session,
+                         directory == "/tmp" ? "Remote /tmp" : "Uploaded files",
+                         "--shell=none", "--keep-open", "--json", "--", Self.ssh, "-t"] +
+                        interactiveOptions + args + [remoteCommand], 15, environment)
+        }
         // Native windows need Remote Control; server-side tabs remain available
         // without it, so folder browsing can still complete in the original session.
         do {
             _ = try execute([rex, "--autostart=false", "-C", client, "do", "client.window.new"], 15, environment)
         } catch {
-            _ = try execute([rex, "--autostart=false", "window", "new", "-s", sid,
-                             directory == "/tmp" ? "Remote /tmp" : "Uploaded files",
-                             "--shell=none", "--keep-open", "--json", "--", Self.ssh, "-t"] +
-                            interactiveOptions + args + [remoteCommand], 15, environment)
+            _ = try openSSH(in: sid)
             return
         }
-        let command = [rex, "--autostart=false", "new", "Rex Drop", "--window",
-                       directory == "/tmp" ? "Remote /tmp" : "Uploaded files",
-                       "--shell=none", "--keep-open", "--json", "--", Self.ssh, "-t"] +
-            interactiveOptions + args + [remoteCommand]
-        let created = try execute(command, 15, environment)
-        guard let session = try JSONSerialization.jsonObject(with: created) as? [String: Any],
-              let newSession = session["session_id"] as? String else {
-            throw DropFailure("Rex created the window but did not return its session.")
+        // The client action acknowledges before its native window and default
+        // session attach. Wait for that session instead of selecting an unrelated
+        // session in the old native window while creation is still in flight.
+        let deadline = ProcessInfo.processInfo.systemUptime + max(0, readinessTimeout)
+        var ready: (session: String, defaultWindow: String?)?
+        repeat {
+            try control.checkpoint()
+            let remaining = deadline - ProcessInfo.processInfo.systemUptime
+            guard remaining > 0 else { break }
+            if let data = try? execute([rex, "--autostart=false", "client", "ls", "--json"], min(1, remaining), environment),
+               let value = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+               let entries = value["clients"] as? [[String: Any]],
+               let current = entries.first(where: { $0["client_id"] as? String == client }) {
+                let added = Set(current["session_ids"] as? [String] ?? []).subtracting(previousSessions)
+                if added.count > 1 { break }
+                if let newSession = added.first, added.count == 1 {
+                    let timeLeft = deadline - ProcessInfo.processInfo.systemUptime
+                    if timeLeft > 0,
+                       let inspected = try? execute([rex, "--autostart=false", "session", "inspect", newSession, "--json"], min(1, timeLeft), environment),
+                       let session = (try? JSONSerialization.jsonObject(with: inspected)) as? [String: Any],
+                       let windows = session["windows"] as? [[String: Any]], !windows.isEmpty {
+                        ready = (newSession, windows.count == 1 ? windows.first?["window_id"] as? String : nil)
+                        break
+                    }
+                }
+            }
+            let delay = min(0.05, deadline - ProcessInfo.processInfo.systemUptime)
+            if delay > 0 { Thread.sleep(forTimeInterval: delay) }
+        } while ProcessInfo.processInfo.systemUptime < deadline
+        guard let ready else {
+            // An unavailable, late, or ambiguous attachment still gets a useful
+            // tab in the original session. Never create a second native window.
+            _ = try openSSH(in: sid)
+            return
         }
-        do {
-            _ = try execute([rex, "--autostart=false", "-C", client, "do", "session.select",
-                             "session_id=" + newSession], 15, environment)
-        } catch {
-            throw DropFailure("The SSH terminal was created in the Rex Drop session. Select that session in Rex to view it.")
+        let created = try openSSH(in: ready.session)
+        if let blank = ready.defaultWindow,
+           let value = (try? JSONSerialization.jsonObject(with: created)) as? [String: Any],
+           let newWindow = value["window_id"] as? String, newWindow != blank {
+            _ = try? execute([rex, "--autostart=false", "window", "close", "-s", ready.session, blank], 15, environment)
         }
+        _ = try? execute([rex, "--autostart=false", "session", "rename", ready.session, "Rex Drop"], 15, environment)
     }
 }
