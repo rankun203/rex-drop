@@ -343,6 +343,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     var statusItem: NSStatusItem!
     var icon: StatusDropView!
     let popover = NSPopover()
+    let quitButton = NSButton(title: "Quit Rex Drop", target: nil, action: nil)
     let destinations = NSStackView(), list = NSStackView()
     let destinationScroll = NSScrollView(), scroll = NSScrollView()
     var destinationHeight: NSLayoutConstraint!, listHeight: NSLayoutConstraint!
@@ -396,7 +397,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     func makePopover() {
         let controller = NSViewController(), root = DestinationSurface(frame: NSRect(x: 0, y: 0, width: 400, height: 116))
         root.owner = self; controller.view = root
-        destinationHeight = installScroll(destinationScroll, stack: destinations, in: root, inset: 10)
+        let content = NSView(); root.addSubview(content); content.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([content.leadingAnchor.constraint(equalTo: root.leadingAnchor), content.trailingAnchor.constraint(equalTo: root.trailingAnchor), content.topAnchor.constraint(equalTo: root.topAnchor), content.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -32)])
+        destinationHeight = installScroll(destinationScroll, stack: destinations, in: content, inset: 10)
+        let divider = NSBox(); divider.boxType = .separator
+        root.addSubview(divider); divider.translatesAutoresizingMaskIntoConstraints = false
+        quitButton.target = self; quitButton.action = #selector(quit)
+        quitButton.isBordered = false; quitButton.font = .systemFont(ofSize: 12)
+        root.addSubview(quitButton); quitButton.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([divider.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 10), divider.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -10), divider.topAnchor.constraint(equalTo: content.bottomAnchor), quitButton.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -14), quitButton.centerYAnchor.constraint(equalTo: content.bottomAnchor, constant: 16)])
         popover.contentViewController = controller; popover.delegate = self
         popover.behavior = .applicationDefined; popover.animates = !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         renderDestinations()
@@ -418,7 +427,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             row.widthAnchor.constraint(equalTo: destinations.widthAnchor).isActive = true
         }
         let height = CGFloat(min(455, max(70, targets.count * 72 - 7)))
-        destinationHeight.constant = height; popover.contentSize = NSSize(width: 400, height: height + 20)
+        destinationHeight.constant = height; popover.contentSize = NSSize(width: 400, height: height + 52)
+        updateQuitButton()
         popover.contentViewController?.view.layoutSubtreeIfNeeded()
     }
     func renderContent() {
@@ -619,7 +629,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         task.operation = operation
         queue.addOperation(operation)
     }
-    func updateTask(_ task: TransferTask) { cards[task.id]?.update(); resizeProgressPanel() }
+    func updateQuitButton() {
+        quitButton.isEnabled = !transferring && !preview
+        quitButton.toolTip = transferring ? "Finish or cancel transfers before quitting" : nil
+    }
+    func updateTask(_ task: TransferTask) { cards[task.id]?.update(); resizeProgressPanel(); updateQuitButton() }
     func openDestination(_ task: TransferTask) {
         guard !preview, task.state == .complete, !task.opening else { return }
         if task.target["kind"] as? String == "local" {

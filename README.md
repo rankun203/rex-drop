@@ -52,8 +52,8 @@ transfers may leave a partial destination; retries start a fresh transfer and
 ask again about existing local names. Each task uses one row; actual errors add
 a second line with the explanation.
 
-Clicking the menu-bar icon opens the same path list. Right-click it for app
-commands. File reception uses native AppKit drag-destination callbacks; there
+Clicking the menu-bar icon opens the same path list, with **Quit Rex Drop** at
+the bottom. Right-click it for additional app commands. File reception uses native AppKit drag-destination callbacks; there
 is no global drag polling, Rex-window inspection, or Accessibility permission.
 Dragging onto the Rex terminal itself uses Rex's own behavior. Files promised
 by browsers or Photos are not supported; save them to Finder first.
