@@ -152,6 +152,7 @@ final class TargetRow: NSView {
     weak var owner: AppDelegate?
     let target: [String: Any]
     var hovering = false
+    let pasteButton = NSButton(title: "Paste", target: nil, action: nil)
     init(target: [String: Any], owner: AppDelegate) {
         self.target = target; self.owner = owner
         super.init(frame: .zero)
@@ -167,7 +168,10 @@ final class TargetRow: NSView {
         let labels = NSStackView(views: [title, detail]); labels.orientation = .vertical; labels.alignment = .leading; labels.spacing = 4
         let arrow = NSImageView(image: NSImage(systemSymbolName: "arrow.down.to.line", accessibilityDescription: "Drop to send")!)
         arrow.contentTintColor = .tertiaryLabelColor
-        let content = NSStackView(views: [icon, labels, NSView(), arrow]); content.spacing = 13; content.alignment = .centerY
+        pasteButton.bezelStyle = .rounded; pasteButton.controlSize = .small
+        pasteButton.target = self; pasteButton.action = #selector(pasteClipboard)
+        pasteButton.toolTip = "Paste clipboard files or image to " + destinationTitle(target)
+        let content = NSStackView(views: [icon, labels, NSView(), pasteButton, arrow]); content.spacing = 13; content.alignment = .centerY
         addSubview(content); content.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([heightAnchor.constraint(equalToConstant: 65), content.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14), content.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14), content.centerYAnchor.constraint(equalTo: centerYAnchor), icon.widthAnchor.constraint(equalToConstant: 25), arrow.widthAnchor.constraint(equalToConstant: 15)])
         labels.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
@@ -175,7 +179,13 @@ final class TargetRow: NSView {
         detail.widthAnchor.constraint(lessThanOrEqualTo: labels.widthAnchor).isActive = true
         toolTip = "\(title.stringValue)\n\(target["label"] as? String ?? "")\n\(target["detail"] as? String ?? detail.stringValue)"
         updateColor()
+        updateClipboard()
     }
+    func updateClipboard() {
+        pasteButton.isHidden = owner?.preview == true ? !CommandLine.arguments.contains("--preview-paste") : !ClipboardInput.canPaste(board: .general)
+        pasteButton.isEnabled = owner?.preview != true
+    }
+    @objc func pasteClipboard() { owner?.pasteClipboard(to: target) }
     required init?(coder: NSCoder) { fatalError() }
     override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); updateColor() }
     func updateColor() {
@@ -233,6 +243,7 @@ final class TransferTask {
     var operation: BlockOperation?
     var openDestination: [String: Any]?
     var copiedPaths: [String] = []
+    var clipboardPayload: ClipboardPayload?
     var opening = false
     init(target: [String: Any], paths: [String]) { self.target = target; self.paths = paths }
     var destination: String { destinationTitle(target) }
@@ -338,7 +349,7 @@ final class TaskCard: NSView {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPopoverDelegate {
-    let preview = CommandLine.arguments.contains("--preview") || isProgressPreview() || CommandLine.arguments.contains("--render-preview")
+    let preview = CommandLine.arguments.contains("--preview") || CommandLine.arguments.contains("--preview-paste") || isProgressPreview() || CommandLine.arguments.contains("--render-preview")
     var panel: DropPanel!
     var statusItem: NSStatusItem!
     var icon: StatusDropView!
@@ -471,6 +482,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     func showDestinations(dragging: Bool) {
         guard let button = statusItem?.button else { return }
         button.highlight(true)
+        for case let row as TargetRow in destinations.arrangedSubviews { row.updateClipboard() }
         dismissWork?.cancel(); dismissWork = nil
         popover.behavior = dragging ? .applicationDefined : .transient
         if !popover.isShown { popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY) }
@@ -500,6 +512,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     }
     @objc func showProgress() { guard !tasks.isEmpty else { return }; renderContent(); panel.orderFrontRegardless() }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply { transferring ? .terminateCancel : .terminateNow }
+    func applicationWillTerminate(_ notification: Notification) {
+        for task in tasks { task.clipboardPayload?.cleanup() }
+    }
     @objc func quit() { NSApp.terminate(nil) }
     @objc func refresh() {
         guard !preview, !refreshing else { return }
@@ -520,10 +535,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     func refreshFailed(_ message: String) {
         if targets.isEmpty { renderDestinations(); popover.contentViewController?.view.toolTip = message }
     }
-    func transfer(_ target: [String: Any], paths: [String]) {
+    func pasteClipboard(to target: [String: Any]) {
+        guard !preview else { return }
+        do {
+            let payload = try ClipboardInput.capture(board: .general)
+            transfer(target, paths: payload.paths, clipboardPayload: payload)
+        } catch {
+            closeDestinations()
+            let alert = NSAlert(); alert.messageText = "Couldn’t paste"
+            alert.informativeText = error.localizedDescription; alert.runModal()
+        }
+    }
+    func transfer(_ target: [String: Any], paths: [String], clipboardPayload: ClipboardPayload? = nil) {
         guard canAcceptDrop, !paths.isEmpty else { return }
         closeDestinations()
         let task = TransferTask(target: target, paths: paths); tasks.append(task)
+        task.clipboardPayload = clipboardPayload
         showProgress(); start(task, retry: false)
     }
     func populatePreview() {
@@ -699,7 +726,7 @@ struct RexDropMain {
     static func main() {
         if CommandLine.arguments.contains("--self-test") { runUIStateTests() }
         // Preview mode stays fully isolated from live terminals, including CLI flags.
-        let preview = CommandLine.arguments.contains("--preview") || isProgressPreview() || CommandLine.arguments.contains("--render-preview")
+        let preview = CommandLine.arguments.contains("--preview") || CommandLine.arguments.contains("--preview-paste") || isProgressPreview() || CommandLine.arguments.contains("--render-preview")
         if !preview && (CommandLine.arguments.contains("--targets") || CommandLine.arguments.contains("--transfer")) {
             let response: [String: Any]
             var status: Int32 = 0

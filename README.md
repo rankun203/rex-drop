@@ -46,6 +46,12 @@ when finished. The progress window stays hidden until a transfer starts.
    it opens a new Rex tab, connects using the captured SSH options, lists the
    upload folder with `ls -ltr` (newest last), and leaves an interactive shell there.
 
+Copy files in Finder or copy an image, then click the menu-bar icon. Each
+destination shows **Paste** while the clipboard contains supported content.
+Paste starts the same transfer flow. Clipboard images become PNG files;
+temporary source images stay available for retries until their task is dismissed
+or the app quits. Clipboard content is read only when you click Paste.
+
 Two tasks can run concurrently. Local progress tracks copied bytes and entries;
 remote progress shows the current file's rsync progress. Cancelled or failed
 transfers may leave a partial destination; retries start a fresh transfer and
@@ -108,6 +114,7 @@ that you want to receive the paths.
 
 ```sh
 ./test.sh
+./clipboard-test.sh
 ./build.sh
 ".build/Rex Drop.app/Contents/MacOS/RexDrop" --self-test
 ".build/Rex Drop.app/Contents/MacOS/RexDrop" --smoke-test
