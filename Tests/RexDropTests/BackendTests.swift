@@ -89,6 +89,9 @@ private final class FakeRex {
         if command.count > 2 && command[2] == "new" {
             return try JSONSerialization.data(withJSONObject: ["session_id": "session:browse"])
         }
+        if command.count > 3 && command[2] == "window" && command[3] == "new" {
+            return try JSONSerialization.data(withJSONObject: ["window_id": "window:browse"])
+        }
         if command.contains("client.window.new") { if failWindow { throw TestFailureForCommand() }; return Data() }
         if command.count > 2 && command[2] == "send" { return Data() }
         if command.count > 3 && command[2] == "client" && command[3] == "ls" {
@@ -763,10 +766,16 @@ struct BackendTests {
     }
 
     @Test
-    func testDisabledRemoteControlCreatesNoTerminal() throws {
+    func testDisabledRemoteControlOpensFolderInTab() throws {
         let fake = FakeRex(); fake.failWindow = true
-        try expectThrows("Remote Control") { try fake.service().openRemoteDestination(remoteMetadata()) }
-        try expect(!fake.calls.contains { $0.count > 2 && $0[2] == "new" }, "Disabled window control left a terminal behind")
+        try fake.service().openRemoteDestination(remoteMetadata())
+        guard let command = fake.calls.last else { throw TestFailure("Missing fallback tab") }
+        try expect(Array(command.prefix(6)) == ["/test/rex", "--autostart=false", "window", "new", "-s", "session:original"],
+                   "Disabled Remote Control should open a tab in the captured session")
+        try expect(command.contains("--shell=none") && command.contains("--keep-open"), "Fallback lost interactive SSH configuration")
+        let script = DropService.shellWords(command.last ?? "") ?? []
+        try expect(script.last?.contains("cd '/tmp/rex-drop.Ab12Cd34' && ls -ltr") == true, "Fallback opened the wrong folder")
+        try expect(!fake.calls.contains { $0.contains("session.select") }, "Fallback retried disabled client control")
     }
 
     @Test

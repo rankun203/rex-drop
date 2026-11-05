@@ -53,8 +53,8 @@ Paste starts the same transfer flow. Clipboard images become PNG files;
 temporary source images stay available for retries until their task is dismissed
 or the app quits. Clipboard content is read only when you click Paste.
 
-Opening SSH folders requires **Rex Settings → Rex Server → Remote Control**.
-Transfers and native drag reception work independently of that setting.
+Opening SSH folders uses a separate Rex window when Remote Control is enabled.
+With it disabled, the folder opens in a tab in the original session, without a settings warning.
 
 Two tasks can run concurrently. Progress shows transferred bytes, total bytes,
 and an overall percentage for both local copies and SSH uploads. Cancelled or failed

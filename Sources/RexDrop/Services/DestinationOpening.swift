@@ -47,12 +47,16 @@ extension DropService {
         guard localApps.count == 1, let client = localApps.first?["client_id"] as? String else {
             throw DropFailure("Open one local Rex app to browse this folder.")
         }
-        // Ask for the native window first: disabled Remote Control must not
-        // leave an SSH tab behind on every attempted click.
+        // Native windows need Remote Control; server-side tabs remain available
+        // without it, so folder browsing can still complete in the original session.
         do {
             _ = try execute([rex, "--autostart=false", "-C", client, "do", "client.window.new"], 15, environment)
         } catch {
-            throw DropFailure("Rex could not open a window. Enable Remote Control in Rex Settings → Rex Server and try again.")
+            _ = try execute([rex, "--autostart=false", "window", "new", "-s", sid,
+                             directory == "/tmp" ? "Remote /tmp" : "Uploaded files",
+                             "--shell=none", "--keep-open", "--json", "--", Self.ssh, "-t"] +
+                            interactiveOptions + args + [remoteCommand], 15, environment)
+            return
         }
         let command = [rex, "--autostart=false", "new", "Rex Drop", "--window",
                        directory == "/tmp" ? "Remote /tmp" : "Uploaded files",
