@@ -893,4 +893,55 @@ struct BackendTests {
             try expect(try String(contentsOf: recovery.appendingPathComponent("item-0/user-work"), encoding: .utf8) == "user work", "Rollback deleted edits inside published folder")
         }
     }
+
+    @Test
+    func testDestinationOpeningUsesActualLocalDirectory() throws {
+        let fake = FakeRex(); fake.cwd = "/actual/project"
+        let service = fake.service()
+        var target = try service.targets()[0]
+        target["destination_path"] = "/untrusted/row/path"
+        let metadata = try service.destinationToOpen(target)
+        try expect(metadata["kind"] as? String == "local" && metadata["directory"] as? String == "/actual/project",
+                   "Folder opening trusted displayed metadata instead of the validated shell cwd")
+        try expect(metadata["ssh_args"] == nil && fake.sends.isEmpty && fake.sshCalls.isEmpty,
+                   "Local folder lookup started a transfer or exposed SSH options")
+        fake.cwd = "/different/project"
+        try expectThrows("changed") { _ = try service.destinationToOpen(target) }
+        try expect(!fake.calls.contains { $0.count > 3 && $0[2] == "window" && $0[3] == "new" },
+                   "Stale destination opened a new terminal")
+    }
+
+    @Test
+    func testDestinationOpeningUsesCapturedSSHConnectionAtTmp() throws {
+        let fake = FakeRex(); fake.foregroundName = "ssh"
+        let service = fake.service(), target = try service.targets()[0]
+        let metadata = try service.destinationToOpen(target)
+        try expect(metadata["kind"] as? String == "ssh" && metadata["directory"] as? String == "/tmp",
+                   "SSH destination lookup omitted the advertised temporary folder")
+        try expect(metadata["session_id"] as? String == "session:one" &&
+                   metadata["ssh_args"] as? [String] == Array(fake.sshArguments.dropFirst()),
+                   "SSH destination lookup lost the validated session or connection options")
+        try expect(target["ssh_args"] == nil, "Private SSH options leaked into destination discovery")
+        try service.openRemoteDestination(metadata)
+        guard let command = fake.calls.first(where: { $0.count > 3 && $0[2] == "window" && $0[3] == "new" }) else {
+            throw TestFailure("SSH browsing did not open a Rex tab")
+        }
+        let shell = DropService.shellWords(command.last ?? "") ?? []
+        try expect(shell.count == 4 && shell[3].contains("cd '/tmp' && ls -ltr") && shell[3].hasSuffix(" -i"),
+                   "SSH browsing listed the wrong folder or omitted its interactive shell")
+        let args = Array(fake.sshArguments.dropFirst())
+        try expect(Array(command.suffix(args.count + 1).dropLast()) == args,
+                   "SSH browsing changed quote-containing identity options")
+        try expect(fake.sends.isEmpty && fake.rsyncs.isEmpty, "Opening a destination started a transfer")
+    }
+
+    @Test
+    func testDestinationOpeningRejectsArbitraryRemoteDirectories() throws {
+        for directory in ["/", "/tmp/", "/tmp/other", "/tmp/rex-drop.Ab12Cd34/child", "/tmp; echo bad"] {
+            let fake = FakeRex()
+            var metadata = remoteMetadata(); metadata["directory"] = directory
+            try expectThrows("unavailable") { try fake.service().openRemoteDestination(metadata) }
+            try expect(fake.calls.isEmpty, "Arbitrary browsing path reached an external command")
+        }
+    }
 }

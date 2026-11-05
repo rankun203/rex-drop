@@ -64,6 +64,11 @@ is no global drag polling, Rex-window inspection, or Accessibility permission.
 Dragging onto the Rex terminal itself uses Rex's own behavior. Files promised
 by browsers or Photos are not supported; save them to Finder first.
 
+Click a destination row to open its folder in Finder, or open a Rex SSH tab at
+`/tmp` with `ls -ltr` and an interactive shell. Clicking outside dismisses the
+path list. Mouse-click observers exist only while the list is visible; they do
+not watch keyboard events or detect drags.
+
 ## Where files go
 
 | Selected pane | Destination |

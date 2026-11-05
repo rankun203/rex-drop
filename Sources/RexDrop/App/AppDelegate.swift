@@ -6,6 +6,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     var statusItem: NSStatusItem!
     var icon: StatusDropView!
     let popover = NSPopover()
+    let clickDismissal = PopoverClickDismissal()
     let quitButton = NSButton(title: "Quit Rex Drop", target: nil, action: nil)
     let destinations = NSStackView(), list = NSStackView()
     let destinationScroll = NSScrollView(), scroll = NSScrollView()
@@ -47,11 +48,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         dismissWork = work; DispatchQueue.main.asyncAfter(deadline: .now() + 0.75, execute: work)
     }
     func closeDestinations() {
+        clickDismissal.stop()
         statusItem?.button?.highlight(false)
         dismissWork?.cancel(); dismissWork = nil; drag.end(); popover.performClose(nil)
         if let pending = deferredTargets { deferredTargets = nil; applyTargets(pending) }
     }
     func popoverDidClose(_ notification: Notification) {
+        clickDismissal.stop()
         statusItem?.button?.highlight(false)
         dismissWork?.cancel(); dismissWork = nil; drag.end()
         if let pending = deferredTargets { deferredTargets = nil; applyTargets(pending) }
@@ -63,6 +66,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         dismissWork?.cancel(); dismissWork = nil
         popover.behavior = dragging ? .applicationDefined : .transient
         if !popover.isShown { popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY) }
+        clickDismissal.start(popover: popover, statusWindow: button.window) { [weak self] in self?.closeDestinations() }
         refresh()
     }
     func toggleDestinations() { if popover.isShown { closeDestinations() } else { showDestinations(dragging: false) } }
@@ -90,6 +94,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     @objc func showProgress() { guard !tasks.isEmpty else { return }; renderContent(); panel.orderFrontRegardless() }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply { transferring ? .terminateCancel : .terminateNow }
     func applicationWillTerminate(_ notification: Notification) {
+        clickDismissal.stop()
         for task in tasks { task.clipboardPayload?.cleanup() }
     }
     @objc func quit() { NSApp.terminate(nil) }

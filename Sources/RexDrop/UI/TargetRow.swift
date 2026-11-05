@@ -4,10 +4,13 @@ final class TargetRow: NSView {
     weak var owner: AppDelegate?
     let target: [String: Any]
     var hovering = false
+    var pressed = false
     let pasteButton = NSButton(title: "Paste", target: nil, action: nil)
     init(target: [String: Any], owner: AppDelegate) {
         self.target = target; self.owner = owner
         super.init(frame: .zero)
+        setAccessibilityElement(true); setAccessibilityRole(.button)
+        setAccessibilityLabel(destinationTitle(target))
         registerForDraggedTypes(nativeFileTypes); wantsLayer = true; layer?.cornerRadius = 10
         let ssh = (target["kind"] as? String) == "ssh"
         let icon = NSImageView(image: NSImage(systemSymbolName: ssh ? "network" : "folder", accessibilityDescription: ssh ? "SSH destination" : "Local destination")!)
@@ -38,6 +41,27 @@ final class TargetRow: NSView {
         pasteButton.isEnabled = owner?.preview != true
     }
     @objc func pasteClipboard() { owner?.pasteClipboard(to: target) }
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let hit = super.hitTest(point)
+        guard hit != nil else { return nil }
+        var view = hit
+        while let current = view, current !== self {
+            if current is NSButton { return hit }
+            view = current.superview
+        }
+        return self
+    }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override func mouseDown(with event: NSEvent) { pressed = true }
+    override func mouseUp(with event: NSEvent) {
+        let shouldOpen = pressed && bounds.contains(convert(event.locationInWindow, from: nil))
+        pressed = false
+        if shouldOpen { owner?.openTarget(target) }
+    }
+    override func accessibilityPerformPress() -> Bool {
+        guard owner?.preview == false else { return false }
+        owner?.openTarget(target); return true
+    }
     required init?(coder: NSCoder) { fatalError() }
     override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); updateColor() }
     func updateColor() {
