@@ -5,7 +5,8 @@ working directory, or uploads them to an SSH host and inserts their paths.
 
 Use your ordinary `ssh` command. Rex Drop discovers local Rex panes, inspects
 their foreground processes, and recovers an SSH connection from the running
-process. It adds a drop zone without changing your shell or Rex configuration.
+process. Its menu-bar icon accepts native file drags without changing your shell
+or Rex configuration.
 
 <p>
   <img src="docs/destinations.png" width="360" alt="Deduplicated SSH and local drop destinations">
@@ -28,14 +29,14 @@ cd rex-drop
 The app is built at `.build/Rex Drop.app`. It runs as a menu bar app and does
 not add a login item. `launch.sh` replaces the previous running build gracefully;
 finish or cancel active transfers before restarting. Quit it from the menu bar
-when finished. The destination panel stays hidden until a file drag reaches Rex.
+when finished. The progress window stays hidden until a transfer starts.
 
 1. Open a local Rex shell or connect normally with `ssh your-host`.
-2. Drag files or folders from Finder over a visible Rex window. Available
-   destination paths appear beside the pointer: SSH first, then local folders, with
+2. Drag files or folders from Finder onto the Rex Drop menu-bar icon. Available
+   destination paths appear beneath the icon: SSH first, then local folders, with
    each group sorted alphabetically. Equivalent destinations appear once.
 3. Drop directly onto a destination. The transfer begins immediately and the
-   destination list collapses into compact task progress.
+   path list closes and a compact progress window appears.
 4. Pause, resume, cancel, or retry each task independently. A new drag reveals
    destinations while existing tasks continue. Successful transfers insert the
    resulting paths into the captured Rex pane without pressing Enter.
@@ -48,12 +49,11 @@ remote progress shows the current file's rsync progress. Cancelled or failed
 transfers may leave a partial destination; retries start a fresh transfer and
 preserve existing local files.
 
-**Show Drop Zone** in the menu bar always opens the window. Automatic reveal is
-experimental: it observes the drag pasteboard and visible window geometry using
-public macOS APIs. It does not install an event tap or request Accessibility
-access. If your macOS version or drag source hides that information, use the
-menu bar. Files promised by browsers or Photos are not supported; save them to
-Finder first.
+Clicking the menu-bar icon opens the same path list. Right-click it for app
+commands. File reception uses native AppKit drag-destination callbacks; there
+is no global drag polling, Rex-window inspection, or Accessibility permission.
+Dragging onto the Rex terminal itself uses Rex's own behavior. Files promised
+by browsers or Photos are not supported; save them to Finder first.
 
 ## Where files go
 
@@ -104,7 +104,7 @@ that you want to receive the paths.
 ".build/Rex Drop.app/Contents/MacOS/RexDrop" --smoke-test
 ```
 
-The smoke test opens the UI and exits after 12 seconds without transferring
+The smoke test starts the app and exits after 12 seconds without transferring
 anything. `".build/Rex Drop.app/Contents/MacOS/RexDrop" --targets` is a read-only
 JSON inspection command. The app reads process arguments only for a local process Rex identifies as SSH;
 full arguments are never returned in the target list.

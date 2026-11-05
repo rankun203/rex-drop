@@ -1,75 +1,99 @@
 import AppKit
-import CoreGraphics
 
-// Window-server coordinates use a top-left origin on the primary display.
-func appKitRect(_ rect: CGRect, primaryTop: CGFloat) -> NSRect {
-    NSRect(x: rect.minX, y: primaryTop - rect.maxY, width: rect.width, height: rect.height)
-}
+let nativeFileTypes: [NSPasteboard.PasteboardType] = [.fileURL]
 
-struct DragGate {
-    var baseline: Int
-    var armed = false
-    var wasPressed = false
-    var fileChangeAt: TimeInterval?
-    mutating func update(change: Int, pressed: Bool, hasFiles: Bool,
-                         now: TimeInterval = ProcessInfo.processInfo.systemUptime) -> Bool {
-        // Finder can publish the drag pasteboard just before a poll observes
-        // the held button. Retain that fresh change across the idle sample.
-        if change != baseline {
-            baseline = change
-            fileChangeAt = hasFiles ? now : nil
-        }
-        guard pressed else {
-            if wasPressed { fileChangeAt = nil }
-            wasPressed = false; armed = false
-            return false
-        }
-        wasPressed = true
-        if let changed = fileChangeAt, now - changed <= 2, hasFiles { armed = true }
-        return armed && hasFiles
+// All drag state comes from AppKit destination callbacks on our own views.
+final class StatusDropView: NSView {
+    weak var owner: AppDelegate?
+        override init(frame: NSRect) {
+        super.init(frame: frame); registerForDraggedTypes(nativeFileTypes)
+        setAccessibilityElement(true); setAccessibilityRole(.button); setAccessibilityLabel("Rex Drop")
     }
-}
 
+    required init?(coder: NSCoder) { fatalError() }
+    override func draw(_ dirtyRect: NSRect) {
+        let image = NSImage(systemSymbolName: "arrow.down.doc", accessibilityDescription: "Rex Drop")!
+        image.isTemplate = true
+        image.draw(in: NSRect(x: (bounds.width - 17) / 2, y: (bounds.height - 18) / 2, width: 17, height: 18))
+    }
+    override func accessibilityPerformPress() -> Bool { owner?.toggleDestinations(); return owner != nil }
+    override func mouseDown(with event: NSEvent) {
+        if event.modifierFlags.contains(.control) { owner?.showCommands(event) }
+        else { owner?.toggleDestinations() }
+    }
+    override func rightMouseDown(with event: NSEvent) { owner?.showCommands(event) }
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard containsFiles(sender.draggingPasteboard) else { return [] }
+        owner?.nativeDragEntered(); owner?.showDestinations(dragging: true)
+        return .copy
+    }
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard containsFiles(sender.draggingPasteboard) else { return [] }
+        owner?.nativeDragEntered(); return .copy
+    }
+    override func draggingExited(_ sender: NSDraggingInfo?) { owner?.scheduleDragDismissal() }
+    override func draggingEnded(_ sender: NSDraggingInfo) { owner?.scheduleDragDismissal() }
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool { owner?.scheduleDragDismissal(); return false }
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool { false }
+}
+func containsFiles(_ pasteboard: NSPasteboard) -> Bool {
+    pasteboard.canReadObject(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true])
+}
+final class DestinationSurface: NSView {
+    weak var owner: AppDelegate?
+    override init(frame: NSRect) { super.init(frame: frame); registerForDraggedTypes(nativeFileTypes) }
+    required init?(coder: NSCoder) { fatalError() }
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard containsFiles(sender.draggingPasteboard) else { return [] }
+        owner?.nativeDragEntered(); return .copy
+    }
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard containsFiles(sender.draggingPasteboard) else { return [] }
+        owner?.nativeDragEntered(); return .copy
+    }
+    override func draggingExited(_ sender: NSDraggingInfo?) { owner?.scheduleDragDismissal() }
+    override func draggingEnded(_ sender: NSDraggingInfo) { owner?.scheduleDragDismissal() }
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool { owner?.scheduleDragDismissal(); return false }
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool { false }
+    override func cancelOperation(_ sender: Any?) { owner?.closeDestinations() }
+}
+enum DropRoute { case icon, background, destination }
+func acceptsTransfer(_ route: DropRoute, fileCount: Int, preview: Bool) -> Bool {
+    route == .destination && fileCount > 0 && !preview
+}
+struct NativeDragLifecycle {
+    private(set) var generation = 0
+    private(set) var active = false
+    mutating func enter() { generation += 1; active = true }
+    mutating func end() { generation += 1; active = false }
+    func mayDismiss(_ token: Int) -> Bool { active && token == generation }
+}
 func runUIStateTests() {
-    let rect = appKitRect(CGRect(x: -1200, y: 100, width: 1000, height: 700), primaryTop: 900)
-    precondition(rect == NSRect(x: -1200, y: 100, width: 1000, height: 700))
-    let below = appKitRect(CGRect(x: 50, y: 950, width: 800, height: 600), primaryTop: 900)
-    precondition(below.minY == -650)
-    var gate = DragGate(baseline: 7)
-    precondition(!gate.update(change: 7, pressed: true, hasFiles: true))
-    precondition(gate.update(change: 8, pressed: true, hasFiles: true))
-    precondition(gate.update(change: 8, pressed: true, hasFiles: true))
-    precondition(!gate.update(change: 8, pressed: false, hasFiles: true))
-    precondition(!gate.update(change: 8, pressed: true, hasFiles: true))
-    precondition(!gate.update(change: 9, pressed: true, hasFiles: false))
-    var prepared = DragGate(baseline: 1)
-    precondition(!prepared.update(change: 2, pressed: false, hasFiles: true, now: 10))
-    precondition(prepared.update(change: 2, pressed: true, hasFiles: true, now: 10.1))
-    precondition(!prepared.update(change: 2, pressed: false, hasFiles: true, now: 10.2))
-    precondition(!prepared.update(change: 2, pressed: true, hasFiles: true, now: 10.3))
-    var stale = DragGate(baseline: 1)
-    precondition(!stale.update(change: 2, pressed: false, hasFiles: true, now: 10))
-    precondition(!stale.update(change: 2, pressed: true, hasFiles: true, now: 13))
-    let ordered = orderedTargets([
-        ["id": "local", "display_name": "Alpha", "kind": "local"],
-        ["id": "ssh-z", "display_name": "Zulu", "kind": "ssh"],
-        ["id": "ssh-a", "display_name": "alpha", "kind": "ssh"],
-        ["id": "ssh-a", "display_name": "alpha", "kind": "ssh"],
-        ["id": "unsupported", "kind": "unsupported"],
+    precondition(nativeFileTypes == [.fileURL])
+    precondition(!acceptsTransfer(.icon, fileCount: 1, preview: false))
+    precondition(!acceptsTransfer(.background, fileCount: 1, preview: false))
+    precondition(acceptsTransfer(.destination, fileCount: 2, preview: false))
+    precondition(!acceptsTransfer(.destination, fileCount: 0, preview: false))
+    precondition(!acceptsTransfer(.destination, fileCount: 1, preview: true))
+    var drag = NativeDragLifecycle()
+    drag.enter(); let iconExit = drag.generation
+    precondition(drag.mayDismiss(iconExit))
+    drag.enter() // Entering the popover cancels the icon's pending exit.
+    precondition(!drag.mayDismiss(iconExit))
+    let rowExit = drag.generation
+    precondition(drag.mayDismiss(rowExit))
+    drag.end(); precondition(!drag.mayDismiss(rowExit))
+    let sorted = orderedTargets([
+        ["id": "local", "kind": "local", "destination_display": "~/site"],
+        ["id": "ssh-z", "kind": "ssh", "destination_display": "dev@zulu:/tmp"],
+        ["id": "ssh-a", "kind": "ssh", "destination_display": "dev@alpha:/tmp"],
+        ["id": "ssh-a", "kind": "ssh", "destination_display": "dev@alpha:/tmp"],
         ["id": "disabled", "kind": "local", "selectable": false]
     ])
-    precondition(ordered.compactMap { $0["id"] as? String } == ["ssh-a", "ssh-z", "local"])
-    precondition(TransferState.queued.active && TransferState.paused.active && TransferState.cancelling.active)
-    precondition(!TransferState.complete.active && !TransferState.failed.active && !TransferState.cancelled.active)
-    precondition(destinationTitle(["kind": "ssh", "display_name": "dev@devbox"]) == "dev@devbox:/tmp")
-    precondition(destinationTitle(["kind": "local", "destination_path": "/opt/projects/site"]) == "/opt/projects/site")
-    precondition(destinationTitle(["destination_display": "~/Projects/website"]) == "~/Projects/website")
-    let task = TransferTask(target:
- ["display_name": "devbox"], paths: ["/tmp/example.txt"])
-    precondition(task.summary == "example.txt" && task.destination == "devbox" && task.state == .queued)
-    print("Rex Drop geometry, drag-state, destination ordering and task-state checks passed")
-
-
+    precondition(sorted.compactMap { $0["id"] as? String } == ["ssh-a", "ssh-z", "local"])
+    precondition(destinationTitle(["kind": "ssh", "display_name": "dev@host"]) == "dev@host:/tmp")
+    precondition(TransferState.paused.active && TransferState.cancelling.active && !TransferState.complete.active)
+    print("Rex Drop native drop-routing, drag-lifecycle, ordering and task-state checks passed")
     exit(0)
 }
 
@@ -127,7 +151,7 @@ final class TargetRow: NSView {
     init(target: [String: Any], owner: AppDelegate) {
         self.target = target; self.owner = owner
         super.init(frame: .zero)
-        registerForDraggedTypes([.fileURL]); wantsLayer = true; layer?.cornerRadius = 10
+        registerForDraggedTypes(nativeFileTypes); wantsLayer = true; layer?.cornerRadius = 10
         let ssh = (target["kind"] as? String) == "ssh"
         let icon = NSImageView(image: NSImage(systemSymbolName: ssh ? "network" : "folder", accessibilityDescription: ssh ? "SSH destination" : "Local destination")!)
         icon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 20, weight: .regular)
@@ -158,9 +182,10 @@ final class TargetRow: NSView {
     func files(_ board: NSPasteboard) -> [String] {
         (board.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []).filter(\.isFileURL).map(\.path)
     }
-    func accepts(_ sender: NSDraggingInfo) -> Bool { owner?.canAcceptDrop == true && !files(sender.draggingPasteboard).isEmpty }
+    func accepts(_ sender: NSDraggingInfo) -> Bool { acceptsTransfer(.destination, fileCount: files(sender.draggingPasteboard).count, preview: owner?.preview ?? true) }
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
         let valid = accepts(sender)
+        if valid { owner?.nativeDragEntered() }
         if hovering != valid {
             hovering = valid; updateColor()
             if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
@@ -171,7 +196,8 @@ final class TargetRow: NSView {
         return valid ? .copy : []
     }
     override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation { draggingEntered(sender) }
-    override func draggingExited(_ sender: NSDraggingInfo?) { hovering = false; updateColor() }
+    override func draggingExited(_ sender: NSDraggingInfo?) { hovering = false; updateColor(); owner?.scheduleDragDismissal() }
+    override func draggingEnded(_ sender: NSDraggingInfo) { owner?.scheduleDragDismissal() }
     override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool { accepts(sender) }
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         guard accepts(sender) else { return false }
@@ -275,187 +301,199 @@ final class TaskCard: NSView {
     @objc func secondaryAction() { owner?.secondaryAction(task) }
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPopoverDelegate {
     let preview = CommandLine.arguments.contains("--preview") || CommandLine.arguments.contains("--preview-progress") || CommandLine.arguments.contains("--render-preview")
     var panel: DropPanel!
     var statusItem: NSStatusItem!
-    var automaticItem: NSMenuItem!
-    let list = NSStackView()
-    let scroll = NSScrollView()
-    let result = NSTextField(labelWithString: "")
-    let count = NSTextField(labelWithString: "")
-    let progress = NSProgressIndicator()
-    var listHeight: NSLayoutConstraint!
+    var icon: StatusDropView!
+    let popover = NSPopover()
+    let destinations = NSStackView(), list = NSStackView()
+    let destinationScroll = NSScrollView(), scroll = NSScrollView()
+    var destinationHeight: NSLayoutConstraint!, listHeight: NSLayoutConstraint!
     var tasks: [TransferTask] = []
     var cards: [UUID: TaskCard] = [:]
-    var showingDestinations = true
-    var autoList = false
-    var headerView: NSView!
-    var footerView: NSView!
+    var targets: [[String: Any]] = []
+    var deferredTargets: [[String: Any]]?
+    var refreshing = false
+    var drag = NativeDragLifecycle()
+    var dragActive: Bool { drag.active }
+    var dismissWork: DispatchWorkItem?
+    var refreshTimer: Timer?
     let queue: OperationQueue = { let q = OperationQueue(); q.maxConcurrentOperationCount = 2; return q }()
     var transferring: Bool { tasks.contains { $0.state.active } }
-    var targets: [[String: Any]] = []
-
-    var deferredTargets: [[String: Any]]?
-    var refreshing = false, manual = false, automatic = true
-    var timer: Timer?
-    var lastRefresh = Date.distantPast
-    var gate = DragGate(baseline: NSPasteboard(name: .drag).changeCount)
-    var lastDrag = false
     var canAcceptDrop: Bool { !preview }
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.setActivationPolicy(.accessory); makePanel()
-        if preview { populatePreview() }
-        makeMenu()
-        if preview { showManual() } else { refresh() }
-        if CommandLine.arguments.contains("--smoke-test") { DispatchQueue.main.asyncAfter(deadline: .now() + 12) { NSApp.terminate(nil) } }
-        if !preview {
-            let pollTimer = Timer(timeInterval: 0.10, repeats: true) { [weak self] _ in self?.poll() }
-            RunLoop.main.add(pollTimer, forMode: .common)
-            timer = pollTimer
+        NSApp.setActivationPolicy(.accessory)
+        makePanel(); makePopover(); makeMenu()
+        if preview {
+            populatePreview()
+            if CommandLine.arguments.contains("--preview-progress") { showProgress() } else { showDestinations(dragging: false) }
+        } else {
+            refresh()
+            let timer = Timer(timeInterval: 5, repeats: true) { [weak self] _ in self?.refresh() }
+            RunLoop.main.add(timer, forMode: .common); refreshTimer = timer
         }
+        if CommandLine.arguments.contains("--smoke-test") { DispatchQueue.main.asyncAfter(deadline: .now() + 12) { NSApp.terminate(nil) } }
     }
-    func exportPreview(_ path: String) throws {
-        makePanel(); populatePreview()
-        panel.orderFrontRegardless(); panel.contentView?.layoutSubtreeIfNeeded(); panel.displayIfNeeded()
-        guard let view = panel.contentView, let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { throw DropFailure("Preview bitmap unavailable.") }
-        view.cacheDisplay(in: view.bounds, to: bitmap)
-        guard let data = bitmap.representation(using: .png, properties: [:]) else { throw DropFailure("Preview PNG unavailable.") }
-        try data.write(to: URL(fileURLWithPath: path))
+    func installScroll(_ scroll: NSScrollView, stack: NSStackView, in root: NSView, inset: CGFloat) -> NSLayoutConstraint {
+        stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 7
+        scroll.drawsBackground = false; scroll.borderType = .noBorder; scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true; scroll.documentView = stack
+        root.addSubview(scroll); scroll.translatesAutoresizingMaskIntoConstraints = false; stack.translatesAutoresizingMaskIntoConstraints = false
+        let height = scroll.heightAnchor.constraint(equalToConstant: 100)
+        NSLayoutConstraint.activate([scroll.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: inset), scroll.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -inset), scroll.topAnchor.constraint(equalTo: root.topAnchor, constant: inset), scroll.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -inset), height, stack.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor), stack.trailingAnchor.constraint(equalTo: scroll.contentView.trailingAnchor), stack.topAnchor.constraint(equalTo: scroll.contentView.topAnchor), stack.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor)])
+        return height
     }
     func makePanel() {
-        panel = DropPanel(contentRect: NSRect(x: 0, y: 0, width: 400, height: 350), styleMask: [.titled, .closable, .nonactivatingPanel, .fullSizeContentView], backing: .buffered, defer: false)
+        panel = DropPanel(contentRect: NSRect(x: 0, y: 0, width: 400, height: 155), styleMask: [.titled, .closable, .nonactivatingPanel, .fullSizeContentView], backing: .buffered, defer: false)
         panel.title = "Rex Drop"; panel.titleVisibility = .hidden; panel.titlebarAppearsTransparent = true
         panel.delegate = self; panel.isFloatingPanel = true; panel.level = .floating
-        panel.hidesOnDeactivate = false; panel.isReleasedWhenClosed = false
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        panel.hidesOnDeactivate = false; panel.isReleasedWhenClosed = false; panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         let root: NSView
-        if preview {
-            let plain = NSView(); plain.wantsLayer = true; plain.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor; root = plain
-        } else {
-            let effect = NSVisualEffectView(); effect.material = .popover; effect.blendingMode = .behindWindow; effect.state = .active; root = effect
-        }
+        if preview { let plain = NSView(); plain.wantsLayer = true; plain.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor; root = plain }
+        else { let effect = NSVisualEffectView(); effect.material = .popover; effect.blendingMode = .behindWindow; effect.state = .active; root = effect }
         panel.contentView = root
-
-        let title = NSTextField(labelWithString: preview ? "Rex Drop · Preview" : "Rex Drop"); title.font = .systemFont(ofSize: 19, weight: .semibold)
-        progress.style = .spinning; progress.controlSize = .small; progress.isDisplayedWhenStopped = false
-        let refreshButton = NSButton(image: NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "Refresh destinations")!, target: self, action: #selector(refresh))
-        refreshButton.isBordered = false; refreshButton.contentTintColor = .secondaryLabelColor; refreshButton.toolTip = "Refresh destinations"
-        let header = NSStackView(views: [title, NSView(), progress, refreshButton]); header.spacing = 10
-        headerView = header
-        refreshButton.widthAnchor.constraint(equalToConstant: 22).isActive = true
-        list.orientation = .vertical; list.alignment = .leading; list.spacing = 7
-        scroll.drawsBackground = false; scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true
-        scroll.borderType = .noBorder; scroll.documentView = list
-        list.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([list.leadingAnchor.constraint(equalTo: scroll.contentView.leadingAnchor), list.trailingAnchor.constraint(equalTo: scroll.contentView.trailingAnchor), list.topAnchor.constraint(equalTo: scroll.contentView.topAnchor), list.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor)])
-        count.font = .systemFont(ofSize: 10); count.textColor = .tertiaryLabelColor
-        result.font = .systemFont(ofSize: 11); result.textColor = .secondaryLabelColor; result.lineBreakMode = .byTruncatingTail
-        result.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        let footer = NSStackView(views: [result, NSView(), count]); footer.spacing = 8
-        footerView = footer
-        let stack = NSStackView(views: [header, scroll, footer]); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 14
-        stack.setCustomSpacing(16, after: header)
-        root.addSubview(stack); stack.translatesAutoresizingMaskIntoConstraints = false
-        listHeight = scroll.heightAnchor.constraint(equalToConstant: 170)
-        NSLayoutConstraint.activate([stack.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 24), stack.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -24), stack.topAnchor.constraint(equalTo: root.topAnchor, constant: 43), stack.bottomAnchor.constraint(lessThanOrEqualTo: root.bottomAnchor, constant: -20), listHeight])
-        for view in [header, scroll, footer] { view.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true }
-        showEmpty("Looking for your terminals…")
+        let container = NSView(); root.addSubview(container); container.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([container.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 12), container.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -12), container.topAnchor.constraint(equalTo: root.topAnchor, constant: 34), container.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -12)])
+        listHeight = installScroll(scroll, stack: list, in: container, inset: 0)
         panel.center()
     }
-    func showEmpty(_ message: String) {
-        for view in list.arrangedSubviews { list.removeArrangedSubview(view); view.removeFromSuperview() }
-        let label = NSTextField(wrappingLabelWithString: message); label.textColor = .secondaryLabelColor; label.font = .systemFont(ofSize: 12)
-        label.alignment = .center; list.addArrangedSubview(label)
-        label.widthAnchor.constraint(equalTo: list.widthAnchor).isActive = true
-        label.heightAnchor.constraint(equalToConstant: 90).isActive = true
+    func makePopover() {
+        let controller = NSViewController(), root = DestinationSurface(frame: NSRect(x: 0, y: 0, width: 400, height: 116))
+        root.owner = self; controller.view = root
+        destinationHeight = installScroll(destinationScroll, stack: destinations, in: root, inset: 10)
+        popover.contentViewController = controller; popover.delegate = self
+        popover.behavior = .applicationDefined; popover.animates = !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        renderDestinations()
     }
-    func applyTargets(_ incoming: [[String: Any]]) {
-        targets = orderedTargets(incoming)
-        if showingDestinations { renderContent() }
+    func clear(_ stack: NSStackView) {
+        for view in stack.arrangedSubviews { stack.removeArrangedSubview(view); view.removeFromSuperview() }
+    }
+    func renderDestinations() {
+        clear(destinations)
+        if targets.isEmpty {
+            let empty = NSTextField(labelWithString: refreshing ? "Loading…" : "No destinations")
+            empty.font = .systemFont(ofSize: 12); empty.textColor = .secondaryLabelColor; empty.alignment = .center
+            destinations.addArrangedSubview(empty)
+            empty.widthAnchor.constraint(equalTo: destinations.widthAnchor).isActive = true
+            empty.heightAnchor.constraint(equalToConstant: 70).isActive = true
+        }
+        for target in targets {
+            let row = TargetRow(target: target, owner: self); destinations.addArrangedSubview(row)
+            row.widthAnchor.constraint(equalTo: destinations.widthAnchor).isActive = true
+        }
+        let height = CGFloat(min(455, max(70, targets.count * 72 - 7)))
+        destinationHeight.constant = height; popover.contentSize = NSSize(width: 400, height: height + 20)
+        popover.contentViewController?.view.layoutSubtreeIfNeeded()
     }
     func renderContent() {
-        cards.removeAll()
-        for view in list.arrangedSubviews { list.removeArrangedSubview(view); view.removeFromSuperview() }
-        headerView.isHidden = !showingDestinations; footerView.isHidden = !showingDestinations
-        let height: Int
-        if showingDestinations {
-            if targets.isEmpty { showEmpty(refreshing ? "Looking for terminals…" : "No destinations") }
-            for target in targets {
-                let row = TargetRow(target: target, owner: self); list.addArrangedSubview(row)
-                row.widthAnchor.constraint(equalTo: list.widthAnchor).isActive = true
-            }
-            count.stringValue = "\(targets.count)"
-            count.toolTip = "Available destinations"
-            height = min(350, max(100, targets.count * 72 - 7))
-        } else {
-            for task in tasks {
-                let card = TaskCard(task: task, owner: self); list.addArrangedSubview(card); cards[task.id] = card
-                card.widthAnchor.constraint(equalTo: list.widthAnchor).isActive = true
-            }
-            height = min(430, max(91, tasks.count * 98 - 7))
+        clear(list); cards.removeAll()
+        for task in tasks {
+            let card = TaskCard(task: task, owner: self); list.addArrangedSubview(card); cards[task.id] = card
+            card.widthAnchor.constraint(equalTo: list.widthAnchor).isActive = true
         }
-        listHeight.constant = CGFloat(height)
-        let old = panel.frame, extra = showingDestinations ? 132 : 64
-        panel.setFrame(NSRect(x: old.minX, y: old.maxY - CGFloat(height + extra), width: old.width, height: CGFloat(height + extra)), display: true)
+        let height = CGFloat(min(430, max(91, tasks.count * 98 - 7)))
+        listHeight.constant = height
+        let old = panel.frame
+        panel.setFrame(NSRect(x: old.minX, y: old.maxY - height - 46, width: old.width, height: height + 46), display: true)
         panel.contentView?.layoutSubtreeIfNeeded()
     }
-    func populatePreview() {
-        applyTargets([
-            ["id": "ssh-a", "display_name": "dev@devbox", "destination_display": "dev@devbox:/tmp", "kind": "ssh", "detail": "Private temporary folder"],
-            ["id": "ssh-b", "display_name": "dev@staging", "destination_display": "dev@staging:/tmp", "kind": "ssh", "detail": "Private temporary folder"],
-            ["id": "local-a", "display_name": "website", "destination_display": "~/Projects/website", "kind": "local", "detail": "Local working folder"]
-        ])
-        if CommandLine.arguments.contains("--preview-progress") {
-            let first = TransferTask(target: targets[0], paths: ["/example/design-assets"])
-            first.state = .running; first.currentFile = "hero-image.png"; first.completedFiles = 3; first.totalFiles = 8
-            let second = TransferTask(target: targets[1], paths: ["/example/notes.md"])
-            second.state = .complete
-            tasks = [first, second]; showingDestinations = false; renderContent()
+    func applyTargets(_ incoming: [[String: Any]]) { targets = orderedTargets(incoming); renderDestinations() }
+    func nativeDragEntered() { dismissWork?.cancel(); dismissWork = nil; drag.enter(); popover.behavior = .applicationDefined }
+    func scheduleDragDismissal() {
+        dismissWork?.cancel()
+        let token = drag.generation
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.drag.mayDismiss(token) else { return }
+            self.closeDestinations()
         }
+        dismissWork = work; DispatchQueue.main.asyncAfter(deadline: .now() + 0.75, execute: work)
     }
+    func closeDestinations() {
+        dismissWork?.cancel(); dismissWork = nil; drag.end(); popover.performClose(nil)
+        if let pending = deferredTargets { deferredTargets = nil; applyTargets(pending) }
+    }
+    func popoverDidClose(_ notification: Notification) {
+        dismissWork?.cancel(); dismissWork = nil; drag.end()
+        if let pending = deferredTargets { deferredTargets = nil; applyTargets(pending) }
+    }
+    func showDestinations(dragging: Bool) {
+        guard let button = statusItem?.button else { return }
+        dismissWork?.cancel(); dismissWork = nil
+        popover.behavior = dragging ? .applicationDefined : .transient
+        if !popover.isShown { popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY) }
+        if targets.isEmpty { refresh() }
+    }
+    func toggleDestinations() { if popover.isShown { closeDestinations() } else { showDestinations(dragging: false) } }
     func makeMenu() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        statusItem.button?.image = NSImage(systemSymbolName: "arrow.down.doc", accessibilityDescription: "Rex Drop")
-        let menu = NSMenu()
-        menu.addItem(withTitle: "Show Drop Zone", action: #selector(showManual), keyEquivalent: "").target = self
-        menu.addItem(withTitle: "Refresh Targets", action: #selector(refresh), keyEquivalent: "r").target = self
-        automaticItem = menu.addItem(withTitle: "Automatic Show", action: #selector(toggleAutomatic), keyEquivalent: "")
-        automaticItem.target = self; automaticItem.state = .on
-        menu.addItem(.separator()); menu.addItem(withTitle: "Quit Rex Drop", action: #selector(quit), keyEquivalent: "q").target = self
-        statusItem.menu = menu
+        guard let button = statusItem.button else { return }
+        button.image = nil; button.toolTip = "Rex Drop · drag files here"
+        icon = StatusDropView(frame: button.bounds); icon.owner = self; icon.autoresizingMask = [.width, .height]; button.addSubview(icon)
     }
-    func windowWillClose(_ notification: Notification) { manual = false }
+    func showCommands(_ event: NSEvent) {
+        closeDestinations()
+        let menu = NSMenu()
+        menu.addItem(withTitle: "Show Progress", action: #selector(showProgress), keyEquivalent: "").target = self
+        menu.addItem(withTitle: "Refresh Destinations", action: #selector(refresh), keyEquivalent: "r").target = self
+        menu.addItem(.separator()); menu.addItem(withTitle: "Quit Rex Drop", action: #selector(quit), keyEquivalent: "q").target = self
+        NSMenu.popUpContextMenu(menu, with: event, for: icon)
+    }
+    @objc func showProgress() { guard !tasks.isEmpty else { return }; renderContent(); panel.orderFrontRegardless() }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply { transferring ? .terminateCancel : .terminateNow }
     @objc func quit() { NSApp.terminate(nil) }
-    @objc func toggleAutomatic() { automatic.toggle(); automaticItem.state = automatic ? .on : .off }
-    @objc func showManual() { manual = true; showingDestinations = !(preview && CommandLine.arguments.contains("--preview-progress")); renderContent(); panel.orderFrontRegardless(); refresh() }
     @objc func refresh() {
         guard !preview, !refreshing else { return }
-        refreshing = true; lastRefresh = Date(); progress.startAnimation(nil)
+        refreshing = true
+        if targets.isEmpty { renderDestinations() }
         Backend.run("targets") { [weak self] response in
-            guard let self else { return }; self.refreshing = false; self.progress.stopAnimation(nil)
+            guard let self else { return }; self.refreshing = false
             switch response {
             case .success(let json):
                 if let error = json["error"] as? String { self.refreshFailed(error); return }
                 let targets = json["targets"] as? [[String: Any]] ?? []
-                // Existing drop rows remain stable for the entire gesture.
-                if self.gate.armed && !self.targets.isEmpty { self.deferredTargets = targets }
+                if self.dragActive && !self.targets.isEmpty { self.deferredTargets = targets }
                 else { self.applyTargets(targets) }
             case .failure(let error): self.refreshFailed(error.localizedDescription)
             }
         }
     }
     func refreshFailed(_ message: String) {
-        result.stringValue = "Couldn’t refresh destinations"; result.textColor = .systemOrange; result.toolTip = message
-        // Cached snapshots stay usable; the backend revalidates the exact destination on drop.
-        if targets.isEmpty && showingDestinations { showEmpty("No destinations") }
+        if targets.isEmpty { renderDestinations(); popover.contentViewController?.view.toolTip = message }
     }
     func transfer(_ target: [String: Any], paths: [String]) {
         guard canAcceptDrop, !paths.isEmpty else { return }
-        let task = TransferTask(target: target, paths: paths)
-        tasks.append(task); manual = true; showingDestinations = false; renderContent()
-        start(task, retry: false)
+        closeDestinations()
+        let task = TransferTask(target: target, paths: paths); tasks.append(task)
+        showProgress(); start(task, retry: false)
+    }
+    func populatePreview() {
+        applyTargets([
+            ["id": "ssh-a", "display_name": "dev@devbox", "destination_display": "dev@devbox:/tmp", "kind": "ssh"],
+            ["id": "ssh-b", "display_name": "dev@staging", "destination_display": "dev@staging:/tmp", "kind": "ssh"],
+            ["id": "local-a", "display_name": "website", "destination_display": "~/Projects/website", "kind": "local"]
+        ])
+        if CommandLine.arguments.contains("--preview-progress") {
+            let first = TransferTask(target: targets[0], paths: ["/example/design-assets"])
+            first.state = .running; first.currentFile = "hero-image.png"; first.completedFiles = 3; first.totalFiles = 8
+            let second = TransferTask(target: targets[1], paths: ["/example/notes.md"]); second.state = .complete
+            tasks = [first, second]; renderContent()
+        }
+    }
+    func exportPreview(_ path: String) throws {
+        makePanel(); makePopover(); populatePreview()
+        let view: NSView
+        let host: NSPanel
+        if CommandLine.arguments.contains("--preview-progress") { host = panel; view = panel.contentView! }
+        else {
+            view = popover.contentViewController!.view
+            host = NSPanel(contentRect: NSRect(origin: .zero, size: popover.contentSize), styleMask: .borderless, backing: .buffered, defer: false)
+            view.wantsLayer = true; view.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor; host.contentView = view
+        }
+        host.orderFrontRegardless(); view.layoutSubtreeIfNeeded(); host.displayIfNeeded()
+        guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { throw DropFailure("Preview bitmap unavailable.") }
+        view.cacheDisplay(in: view.bounds, to: bitmap)
+        guard let data = bitmap.representation(using: .png, properties: [:]) else { throw DropFailure("Preview PNG unavailable.") }
+        try data.write(to: URL(fileURLWithPath: path))
     }
     func start(_ task: TransferTask, retry: Bool) {
         task.attempt += 1; let attempt = task.attempt
@@ -561,64 +599,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             else { renderContent() }
         }
     }
-    func rexWindow(at point: NSPoint) -> NSRect? {
-        let apps = NSWorkspace.shared.runningApplications.filter {
-            let name = ($0.localizedName ?? "").lowercased()
-            return name == "rex" || name == "rex beta" || ($0.bundleIdentifier ?? "").lowercased().hasPrefix("com.superlogical.rex")
-        }
-        let pids = Set(apps.map(\.processIdentifier))
-        let primaryTop = NSScreen.screens.first?.frame.maxY ?? CGDisplayBounds(CGMainDisplayID()).height
-        guard let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { return nil }
-        for window in windows {
-            guard let pid = window[kCGWindowOwnerPID as String] as? Int32, pid != ProcessInfo.processInfo.processIdentifier,
-                  (window[kCGWindowLayer as String] as? Int) == 0,
-                  let raw = window[kCGWindowBounds as String] as? NSDictionary,
-                  let bounds = CGRect(dictionaryRepresentation: raw), bounds.width > 40, bounds.height > 40 else { continue }
-            let rect = appKitRect(bounds, primaryTop: primaryTop)
-            if rect.contains(point) {
-                let owner = (window[kCGWindowOwnerName as String] as? String ?? "").lowercased()
-                let isRex = pids.contains(pid) || owner == "rex" || owner == "rex beta"
-                if isRex { return rect }
-                // Drag image feedback can itself be a small layer-zero window.
-                // It should not hide the app underneath the held file icon.
-                if bounds.width <= 256 && bounds.height <= 256 { continue }
-                return nil
-            }
-        }
-        return nil
-    }
-    func poll() {
-        let board = NSPasteboard(name: .drag)
-        let pressed = CGEventSource.buttonState(.combinedSessionState, button: .left) || NSEvent.pressedMouseButtons & 1 != 0
-        let files = board.types?.contains(.fileURL) == true || board.canReadObject(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true])
-        let dragging = gate.update(change: board.changeCount, pressed: pressed, hasFiles: files)
-        if automatic, dragging, !autoList, (!panel.isVisible || !panel.frame.contains(NSEvent.mouseLocation)), let rex = rexWindow(at: NSEvent.mouseLocation) {
-            showingDestinations = true; autoList = true; renderContent()
-            // Reveal beside the pointer once. It remains still throughout the gesture.
-            let mouse = NSEvent.mouseLocation
-            let screen = NSScreen.screens.first(where: { $0.frame.contains(mouse) }) ?? NSScreen.main
-            var origin = NSPoint(x: mouse.x + 18, y: mouse.y - panel.frame.height + 46)
-            if let visible = screen?.visibleFrame {
-                let region = rex.intersection(visible)
-                let bounds = region.width >= panel.frame.width && region.height >= panel.frame.height ? region : visible
-                origin.x = max(bounds.minX, min(origin.x, bounds.maxX - panel.frame.width))
-                origin.y = max(bounds.minY, min(origin.y, bounds.maxY - panel.frame.height))
-            }
-            panel.setFrameOrigin(origin); panel.orderFrontRegardless()
-            if targets.isEmpty { refresh() }
-        }
-        if !pressed {
-            if let targets = deferredTargets { deferredTargets = nil; applyTargets(targets) }
-            if Date().timeIntervalSince(lastRefresh) > 5 { refresh() }
-        }
-        if lastDrag && !pressed && autoList {
-            autoList = false
-            if !tasks.isEmpty { showingDestinations = false; renderContent() }
-            else if !manual { panel.orderOut(nil) }
-        }
 
-        lastDrag = dragging
-    }
 }
 
 @main
