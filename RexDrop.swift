@@ -5,17 +5,12 @@ let nativeFileTypes: [NSPasteboard.PasteboardType] = [.fileURL]
 // All drag state comes from AppKit destination callbacks on our own views.
 final class StatusDropView: NSView {
     weak var owner: AppDelegate?
-        override init(frame: NSRect) {
+    override init(frame: NSRect) {
         super.init(frame: frame); registerForDraggedTypes(nativeFileTypes)
         setAccessibilityElement(true); setAccessibilityRole(.button); setAccessibilityLabel("Rex Drop")
     }
 
     required init?(coder: NSCoder) { fatalError() }
-    override func draw(_ dirtyRect: NSRect) {
-        let image = NSImage(systemSymbolName: "arrow.down.doc", accessibilityDescription: "Rex Drop")!
-        image.isTemplate = true
-        image.draw(in: NSRect(x: (bounds.width - 17) / 2, y: (bounds.height - 18) / 2, width: 17, height: 18))
-    }
     override func accessibilityPerformPress() -> Bool { owner?.toggleDestinations(); return owner != nil }
     override func mouseDown(with event: NSEvent) {
         if event.modifierFlags.contains(.control) { owner?.showCommands(event) }
@@ -244,7 +239,9 @@ final class TaskCard: NSView {
         layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.025).cgColor
         layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.35).cgColor; layer?.borderWidth = 0.5
         title.font = .systemFont(ofSize: 12, weight: .medium); title.lineBreakMode = .byTruncatingMiddle
-        detail.font = .systemFont(ofSize: 10); detail.textColor = .secondaryLabelColor; detail.lineBreakMode = .byTruncatingMiddle
+        detail.font = .systemFont(ofSize: 11); detail.textColor = .secondaryLabelColor
+        detail.maximumNumberOfLines = 3; detail.lineBreakMode = .byWordWrapping
+        detail.cell?.wraps = true; detail.isSelectable = true
         bar.style = .bar; bar.controlSize = .small; bar.minValue = 0; bar.maxValue = 1
         for button in [pause, cancel] { button.isBordered = false; button.contentTintColor = .secondaryLabelColor; button.widthAnchor.constraint(equalToConstant: 22).isActive = true }
         pause.target = self; pause.action = #selector(primaryAction); cancel.target = self; cancel.action = #selector(secondaryAction)
@@ -280,10 +277,12 @@ final class TaskCard: NSView {
         title.stringValue = (owner?.preview == true ? "Preview · " : "") + "\(task.summary) → \(task.destination)"
         let count = task.totalFiles > 0 ? " · \(task.completedFiles)/\(task.totalFiles)" : ""
         detail.stringValue = task.state == .running ? ((task.currentFile.isEmpty ? task.phase : task.currentFile) + count) : task.state.rawValue
+        if task.state == .failed, !task.error.isEmpty { detail.stringValue = task.error }
         detail.textColor = task.state == .failed ? .systemOrange : task.state == .complete ? .systemGreen : .secondaryLabelColor
         toolTip = task.error.isEmpty ? task.paths.joined(separator: "\n") + "\n→ " + task.destination : task.error
         if task.state == .complete { toolTip = (toolTip ?? "") + "\n⌘-click to open destination" }
         let spinning = task.state == .running && task.fraction == nil
+        bar.isHidden = task.state == .failed
         bar.isIndeterminate = spinning
         if spinning { bar.startAnimation(nil) } else { bar.stopAnimation(nil); bar.doubleValue = task.state == .complete ? 1 : (task.fraction ?? 0) }
         bar.alphaValue = task.state == .paused ? 0.4 : 1
@@ -409,25 +408,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         dismissWork = work; DispatchQueue.main.asyncAfter(deadline: .now() + 0.75, execute: work)
     }
     func closeDestinations() {
+        statusItem?.button?.highlight(false)
         dismissWork?.cancel(); dismissWork = nil; drag.end(); popover.performClose(nil)
         if let pending = deferredTargets { deferredTargets = nil; applyTargets(pending) }
     }
     func popoverDidClose(_ notification: Notification) {
+        statusItem?.button?.highlight(false)
         dismissWork?.cancel(); dismissWork = nil; drag.end()
         if let pending = deferredTargets { deferredTargets = nil; applyTargets(pending) }
     }
     func showDestinations(dragging: Bool) {
         guard let button = statusItem?.button else { return }
+        button.highlight(true)
         dismissWork?.cancel(); dismissWork = nil
         popover.behavior = dragging ? .applicationDefined : .transient
         if !popover.isShown { popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY) }
-        if targets.isEmpty { refresh() }
+        refresh()
     }
     func toggleDestinations() { if popover.isShown { closeDestinations() } else { showDestinations(dragging: false) } }
     func makeMenu() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         guard let button = statusItem.button else { return }
-        button.image = nil; button.toolTip = "Rex Drop · drag files here"
+        // The status button renders template images using the menu bar's own
+        // contrast and highlight appearance; the overlay only receives input.
+        let image = NSImage(systemSymbolName: "tray.and.arrow.down", accessibilityDescription: "Rex Drop")!
+        image.isTemplate = true
+        button.image = image
+        button.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 16, weight: .regular)
+        button.imagePosition = .imageOnly
+        button.toolTip = "Rex Drop · drag files here"
         icon = StatusDropView(frame: button.bounds); icon.owner = self; icon.autoresizingMask = [.width, .height]; button.addSubview(icon)
     }
     func showCommands(_ event: NSEvent) {
@@ -542,6 +551,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
                     guard task.attempt == attempt else { return }
                     task.state = control.isCancelled ? .cancelled : .failed
                     task.error = error.localizedDescription; self?.updateTask(task)
+                    self?.refresh()
                 }
             }
         }

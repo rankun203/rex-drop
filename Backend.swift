@@ -556,8 +556,8 @@ final class DropService {
             }
         }
         let destinations = paths.map { root.appendingPathComponent(($0 as NSString).lastPathComponent).path }
-        guard !destinations.contains(where: { info($0) != nil }) else {
-            throw DropFailure("A destination basename already exists. Rename the item or change shell directory.")
+        if let existing = destinations.first(where: { info($0) != nil }) {
+            throw DropFailure("\((existing as NSString).lastPathComponent) already exists in \(directory). Rename it or choose another folder.")
         }
         var totalBytes: Int64 = 0, totalFiles = 0, completedBytes: Int64 = 0, completedFiles = 0
         func scan(_ path: String) throws {
