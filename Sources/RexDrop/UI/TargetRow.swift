@@ -5,9 +5,9 @@ final class TargetRow: NSView {
     let target: [String: Any]
     var hovering = false
     var pressed = false
-    let pasteButton = NSButton()
+    let pasteButton = IconButton()
     let title = NSTextField(labelWithString: "")
-    let openIcon = NSImageView()
+    let openButton = IconButton()
     private let clipboardAvailability: Bool?
     init(target: [String: Any], owner: AppDelegate, clipboardAvailable: Bool? = nil) {
         self.target = target; self.owner = owner; self.clipboardAvailability = clipboardAvailable
@@ -26,28 +26,29 @@ final class TargetRow: NSView {
         let detail = NSTextField(labelWithString: ssh ? "Private folder · SSH" : "Local folder")
         detail.font = .systemFont(ofSize: 10); detail.textColor = .secondaryLabelColor
         detail.lineBreakMode = .byTruncatingTail; detail.maximumNumberOfLines = 1
-        openIcon.image = NSImage(systemSymbolName: "folder", accessibilityDescription: "Open destination")
-        openIcon.contentTintColor = .tertiaryLabelColor; openIcon.toolTip = "Open destination"
-        pasteButton.title = ""
+        openButton.image = NSImage(systemSymbolName: "folder", accessibilityDescription: "Open destination")
+        openButton.contentTintColor = .tertiaryLabelColor; openButton.toolTip = "Open destination"
+        openButton.target = self; openButton.action = #selector(openDestination)
+        openButton.setAccessibilityLabel("Open destination")
+        openButton.isEnabled = owner.preview != true
         pasteButton.image = NSImage(systemSymbolName: "doc.on.clipboard", accessibilityDescription: "Paste clipboard")
-        pasteButton.isBordered = false; pasteButton.imagePosition = .imageOnly
         pasteButton.contentTintColor = .secondaryLabelColor
         pasteButton.target = self; pasteButton.action = #selector(pasteClipboard)
         pasteButton.setAccessibilityLabel("Paste clipboard")
         pasteButton.toolTip = "Paste clipboard files or image to " + destinationTitle(target)
         // Fixed controls reserve their space; a long path only compresses its label.
-        for view in [icon, title, detail, pasteButton, openIcon] {
+        for view in [icon, title, detail, pasteButton, openButton] {
             addSubview(view); view.translatesAutoresizingMaskIntoConstraints = false
         }
         NSLayoutConstraint.activate([
             heightAnchor.constraint(equalToConstant: 65),
             icon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
             icon.centerYAnchor.constraint(equalTo: centerYAnchor), icon.widthAnchor.constraint(equalToConstant: 24),
-            openIcon.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
-            openIcon.centerYAnchor.constraint(equalTo: centerYAnchor), openIcon.widthAnchor.constraint(equalToConstant: 17),
-            pasteButton.trailingAnchor.constraint(equalTo: openIcon.leadingAnchor, constant: -10),
+            openButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
+            openButton.centerYAnchor.constraint(equalTo: centerYAnchor), openButton.widthAnchor.constraint(equalToConstant: 28), openButton.heightAnchor.constraint(equalToConstant: 28),
+            pasteButton.trailingAnchor.constraint(equalTo: openButton.leadingAnchor, constant: -4),
             pasteButton.centerYAnchor.constraint(equalTo: centerYAnchor),
-            pasteButton.widthAnchor.constraint(equalToConstant: 22), pasteButton.heightAnchor.constraint(equalToConstant: 24),
+            pasteButton.widthAnchor.constraint(equalToConstant: 28), pasteButton.heightAnchor.constraint(equalToConstant: 28),
             title.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 12),
             title.trailingAnchor.constraint(equalTo: pasteButton.leadingAnchor, constant: -10),
             title.topAnchor.constraint(equalTo: topAnchor, constant: 16),
@@ -65,6 +66,7 @@ final class TargetRow: NSView {
         let available = clipboardAvailability ?? ClipboardInput.canPaste(board: .general)
         pasteButton.contentTintColor = available ? .secondaryLabelColor : .tertiaryLabelColor
     }
+    @objc func openDestination() { owner?.openTarget(target) }
     @objc func pasteClipboard() { owner?.pasteClipboard(to: target) }
     override func hitTest(_ point: NSPoint) -> NSView? {
         let hit = super.hitTest(point)
