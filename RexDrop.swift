@@ -9,9 +9,23 @@ func appKitRect(_ rect: CGRect, primaryTop: CGFloat) -> NSRect {
 struct DragGate {
     var baseline: Int
     var armed = false
-    mutating func update(change: Int, pressed: Bool, hasFiles: Bool) -> Bool {
-        guard pressed else { baseline = change; armed = false; return false }
-        if change != baseline && hasFiles { armed = true }
+    var wasPressed = false
+    var fileChangeAt: TimeInterval?
+    mutating func update(change: Int, pressed: Bool, hasFiles: Bool,
+                         now: TimeInterval = ProcessInfo.processInfo.systemUptime) -> Bool {
+        // Finder can publish the drag pasteboard just before a poll observes
+        // the held button. Retain that fresh change across the idle sample.
+        if change != baseline {
+            baseline = change
+            fileChangeAt = hasFiles ? now : nil
+        }
+        guard pressed else {
+            if wasPressed { fileChangeAt = nil }
+            wasPressed = false; armed = false
+            return false
+        }
+        wasPressed = true
+        if let changed = fileChangeAt, now - changed <= 2, hasFiles { armed = true }
         return armed && hasFiles
     }
 }
@@ -28,6 +42,14 @@ func runUIStateTests() {
     precondition(!gate.update(change: 8, pressed: false, hasFiles: true))
     precondition(!gate.update(change: 8, pressed: true, hasFiles: true))
     precondition(!gate.update(change: 9, pressed: true, hasFiles: false))
+    var prepared = DragGate(baseline: 1)
+    precondition(!prepared.update(change: 2, pressed: false, hasFiles: true, now: 10))
+    precondition(prepared.update(change: 2, pressed: true, hasFiles: true, now: 10.1))
+    precondition(!prepared.update(change: 2, pressed: false, hasFiles: true, now: 10.2))
+    precondition(!prepared.update(change: 2, pressed: true, hasFiles: true, now: 10.3))
+    var stale = DragGate(baseline: 1)
+    precondition(!stale.update(change: 2, pressed: false, hasFiles: true, now: 10))
+    precondition(!stale.update(change: 2, pressed: true, hasFiles: true, now: 13))
     let ordered = orderedTargets([
         ["id": "local", "display_name": "Alpha", "kind": "local"],
         ["id": "ssh-z", "display_name": "Zulu", "kind": "ssh"],
@@ -39,7 +61,11 @@ func runUIStateTests() {
     precondition(ordered.compactMap { $0["id"] as? String } == ["ssh-a", "ssh-z", "local"])
     precondition(TransferState.queued.active && TransferState.paused.active && TransferState.cancelling.active)
     precondition(!TransferState.complete.active && !TransferState.failed.active && !TransferState.cancelled.active)
-    let task = TransferTask(target: ["display_name": "devbox"], paths: ["/tmp/example.txt"])
+    precondition(destinationTitle(["kind": "ssh", "display_name": "dev@devbox"]) == "dev@devbox:/tmp")
+    precondition(destinationTitle(["kind": "local", "destination_path": "/opt/projects/site"]) == "/opt/projects/site")
+    precondition(destinationTitle(["destination_display": "~/Projects/website"]) == "~/Projects/website")
+    let task = TransferTask(target:
+ ["display_name": "devbox"], paths: ["/tmp/example.txt"])
     precondition(task.summary == "example.txt" && task.destination == "devbox" && task.state == .queued)
     print("Rex Drop geometry, drag-state, destination ordering and task-state checks passed")
 
@@ -74,10 +100,24 @@ func orderedTargets(_ targets: [[String: Any]]) -> [[String: Any]] {
     }.sorted {
         let leftSSH = ($0["kind"] as? String) == "ssh", rightSSH = ($1["kind"] as? String) == "ssh"
         if leftSSH != rightSSH { return leftSSH }
-        let left = $0["display_name"] as? String ?? $0["label"] as? String ?? ""
-        let right = $1["display_name"] as? String ?? $1["label"] as? String ?? ""
+        let left = destinationTitle($0)
+        let right = destinationTitle($1)
         return left.localizedCaseInsensitiveCompare(right) == .orderedAscending
     }
+}
+
+func destinationTitle(_ target: [String: Any]) -> String {
+    if let display = target["destination_display"] as? String, !display.isEmpty { return display }
+    if target["kind"] as? String == "ssh" {
+        return (target["display_name"] as? String ?? "SSH") + ":/tmp"
+    }
+    let detail = target["detail"] as? String ?? ""
+    let path = target["destination_path"] as? String ?? detail.components(separatedBy: " · ").last ?? ""
+    if path.hasPrefix("/") {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        return path == home ? "~" : path.hasPrefix(home + "/") ? "~" + path.dropFirst(home.count) : path
+    }
+    return path.isEmpty ? (target["display_name"] as? String ?? target["label"] as? String ?? "Rex") : path
 }
 
 final class TargetRow: NSView {
@@ -92,10 +132,10 @@ final class TargetRow: NSView {
         let icon = NSImageView(image: NSImage(systemSymbolName: ssh ? "network" : "folder", accessibilityDescription: ssh ? "SSH destination" : "Local destination")!)
         icon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 20, weight: .regular)
         icon.contentTintColor = .secondaryLabelColor
-        let title = NSTextField(labelWithString: target["display_name"] as? String ?? target["label"] as? String ?? "Rex terminal")
-        title.font = .systemFont(ofSize: 13, weight: .medium); title.lineBreakMode = .byTruncatingTail
-        let detail = NSTextField(labelWithString: target["detail"] as? String ?? (ssh ? "SSH" : "Local"))
-        detail.font = .monospacedSystemFont(ofSize: 10, weight: .regular); detail.textColor = .secondaryLabelColor; detail.lineBreakMode = .byTruncatingMiddle
+        let title = NSTextField(labelWithString: destinationTitle(target))
+        title.font = .monospacedSystemFont(ofSize: 12, weight: .medium); title.lineBreakMode = .byTruncatingMiddle
+        let detail = NSTextField(labelWithString: ssh ? "Private folder · SSH" : "Local folder")
+        detail.font = .systemFont(ofSize: 10, weight: .regular); detail.textColor = .secondaryLabelColor; detail.lineBreakMode = .byTruncatingMiddle
         let labels = NSStackView(views: [title, detail]); labels.orientation = .vertical; labels.alignment = .leading; labels.spacing = 4
         let arrow = NSImageView(image: NSImage(systemSymbolName: "arrow.down.to.line", accessibilityDescription: "Drop to send")!)
         arrow.contentTintColor = .tertiaryLabelColor
@@ -105,7 +145,7 @@ final class TargetRow: NSView {
         labels.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         title.widthAnchor.constraint(lessThanOrEqualTo: labels.widthAnchor).isActive = true
         detail.widthAnchor.constraint(lessThanOrEqualTo: labels.widthAnchor).isActive = true
-        toolTip = "\(target["label"] as? String ?? title.stringValue)\n\(detail.stringValue)"
+        toolTip = "\(title.stringValue)\n\(target["label"] as? String ?? "")\n\(target["detail"] as? String ?? detail.stringValue)"
         updateColor()
     }
     required init?(coder: NSCoder) { fatalError() }
@@ -158,8 +198,11 @@ final class TransferTask {
     var attempt = 0
     var started = false
     var operation: BlockOperation?
+    var openDestination: [String: Any]?
+    var copiedPaths: [String] = []
+    var opening = false
     init(target: [String: Any], paths: [String]) { self.target = target; self.paths = paths }
-    var destination: String { target["display_name"] as? String ?? target["label"] as? String ?? "Rex" }
+    var destination: String { destinationTitle(target) }
     var summary: String { paths.count == 1 ? URL(fileURLWithPath: paths[0]).lastPathComponent : "\(paths.count) items" }
 }
 final class TaskCard: NSView {
@@ -188,12 +231,32 @@ final class TaskCard: NSView {
         update()
     }
     required init?(coder: NSCoder) { fatalError() }
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let hit = super.hitTest(point)
+        guard hit != nil, task.state == .complete, NSEvent.modifierFlags.contains(.command) else { return hit }
+        // Keep task controls independent from the card's destination shortcut.
+        var view = hit
+        while let current = view, current !== self {
+            if current is NSButton { return hit }
+            view = current.superview
+        }
+        return self
+    }
+    override func mouseUp(with event: NSEvent) {
+        if event.modifierFlags.contains(.command), bounds.contains(convert(event.locationInWindow, from: nil)) {
+            owner?.openDestination(task)
+        } else { super.mouseUp(with: event) }
+    }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        task.state == .complete && event?.modifierFlags.contains(.command) == true
+    }
     func update() {
         title.stringValue = (owner?.preview == true ? "Preview · " : "") + "\(task.summary) → \(task.destination)"
         let count = task.totalFiles > 0 ? " · \(task.completedFiles)/\(task.totalFiles)" : ""
         detail.stringValue = task.state == .running ? ((task.currentFile.isEmpty ? task.phase : task.currentFile) + count) : task.state.rawValue
         detail.textColor = task.state == .failed ? .systemOrange : task.state == .complete ? .systemGreen : .secondaryLabelColor
-        toolTip = task.error.isEmpty ? task.paths.joined(separator: "\n") : task.error
+        toolTip = task.error.isEmpty ? task.paths.joined(separator: "\n") + "\n→ " + task.destination : task.error
+        if task.state == .complete { toolTip = (toolTip ?? "") + "\n⌘-click to open destination" }
         let spinning = task.state == .running && task.fraction == nil
         bar.isIndeterminate = spinning
         if spinning { bar.startAnimation(nil) } else { bar.stopAnimation(nil); bar.doubleValue = task.state == .complete ? 1 : (task.fraction ?? 0) }
@@ -243,9 +306,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory); makePanel()
         if preview { populatePreview() }
-        makeMenu(); showManual()
+        makeMenu()
+        if preview { showManual() } else { refresh() }
         if CommandLine.arguments.contains("--smoke-test") { DispatchQueue.main.asyncAfter(deadline: .now() + 12) { NSApp.terminate(nil) } }
-        if !preview { timer = Timer.scheduledTimer(withTimeInterval: 0.10, repeats: true) { [weak self] _ in self?.poll() } }
+        if !preview {
+            let pollTimer = Timer(timeInterval: 0.10, repeats: true) { [weak self] _ in self?.poll() }
+            RunLoop.main.add(pollTimer, forMode: .common)
+            timer = pollTimer
+        }
     }
     func exportPreview(_ path: String) throws {
         makePanel(); populatePreview()
@@ -334,9 +402,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     func populatePreview() {
         applyTargets([
-            ["id": "ssh-a", "display_name": "devbox", "kind": "ssh", "detail": "devbox:/tmp/rex-drop"],
-            ["id": "ssh-b", "display_name": "staging", "kind": "ssh", "detail": "staging:/tmp/rex-drop"],
-            ["id": "local-a", "display_name": "website", "kind": "local", "detail": "~/Projects/website"]
+            ["id": "ssh-a", "display_name": "dev@devbox", "destination_display": "dev@devbox:/tmp", "kind": "ssh", "detail": "Private temporary folder"],
+            ["id": "ssh-b", "display_name": "dev@staging", "destination_display": "dev@staging:/tmp", "kind": "ssh", "detail": "Private temporary folder"],
+            ["id": "local-a", "display_name": "website", "destination_display": "~/Projects/website", "kind": "local", "detail": "Local working folder"]
         ])
         if CommandLine.arguments.contains("--preview-progress") {
             let first = TransferTask(target: targets[0], paths: ["/example/design-assets"])
@@ -358,6 +426,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         statusItem.menu = menu
     }
     func windowWillClose(_ notification: Notification) { manual = false }
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply { transferring ? .terminateCancel : .terminateNow }
     @objc func quit() { NSApp.terminate(nil) }
     @objc func toggleAutomatic() { automatic.toggle(); automaticItem.state = automatic ? .on : .off }
     @objc func showManual() { manual = true; showingDestinations = !(preview && CommandLine.arguments.contains("--preview-progress")); renderContent(); panel.orderFrontRegardless(); refresh() }
@@ -392,6 +461,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         task.attempt += 1; let attempt = task.attempt
         task.control = DropTaskControl(); task.started = false; task.state = .queued; task.error = ""; task.fraction = nil
         task.currentFile = ""; task.completedFiles = 0; task.totalFiles = 0
+        task.openDestination = nil; task.copiedPaths = []
         updateTask(task)
         let control = task.control, original = task.target, paths = task.paths
         let operation = BlockOperation { [weak self, weak task] in
@@ -425,6 +495,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 guard response["ok"] as? Bool == true else { throw DropFailure(response["error"] as? String ?? "Transfer failed.") }
                 DispatchQueue.main.async {
                     guard task.attempt == attempt else { return }
+                    task.openDestination = response["open_destination"] as? [String: Any]
+                    task.copiedPaths = response["paths"] as? [String] ?? []
                     task.state = .complete; self?.updateTask(task)
                 }
             } catch {
@@ -439,6 +511,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         queue.addOperation(operation)
     }
     func updateTask(_ task: TransferTask) { cards[task.id]?.update() }
+    func openDestination(_ task: TransferTask) {
+        guard !preview, task.state == .complete, !task.opening else { return }
+        if task.target["kind"] as? String == "local" {
+            guard !task.copiedPaths.isEmpty else { return }
+            NSWorkspace.shared.activateFileViewerSelecting(task.copiedPaths.map { URL(fileURLWithPath: $0) })
+            return
+        }
+        guard let destination = task.openDestination else { return }
+        task.opening = true
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            do {
+                try DropService().openRemoteDestination(destination)
+                DispatchQueue.main.async {
+                    task.opening = false; task.error = ""; self?.updateTask(task)
+                    let rex = NSWorkspace.shared.runningApplications.first {
+                        $0.bundleIdentifier == "com.superlogical.rex"
+                    }
+                    rex?.activate(options: [])
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    task.opening = false; task.error = error.localizedDescription; self?.updateTask(task)
+                    let alert = NSAlert(); alert.messageText = "Couldn’t open destination"
+                    alert.informativeText = error.localizedDescription
+                    if let panel = self?.panel { alert.beginSheetModal(for: panel) }
+                }
+            }
+        }
+    }
     func primaryAction(_ task: TransferTask) {
         switch task.state {
         case .queued, .running: task.control.pause(); task.state = .paused
@@ -463,27 +564,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func rexWindow(at point: NSPoint) -> NSRect? {
         let apps = NSWorkspace.shared.runningApplications.filter {
             let name = ($0.localizedName ?? "").lowercased()
-            return name == "rex" || name == "rex beta" || ($0.bundleIdentifier ?? "").lowercased().hasSuffix(".rex")
+            return name == "rex" || name == "rex beta" || ($0.bundleIdentifier ?? "").lowercased().hasPrefix("com.superlogical.rex")
         }
         let pids = Set(apps.map(\.processIdentifier))
-        guard !pids.isEmpty, let primary = NSScreen.screens.first,
-              let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { return nil }
+        let primaryTop = NSScreen.screens.first?.frame.maxY ?? CGDisplayBounds(CGMainDisplayID()).height
+        guard let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { return nil }
         for window in windows {
             guard let pid = window[kCGWindowOwnerPID as String] as? Int32, pid != ProcessInfo.processInfo.processIdentifier,
                   (window[kCGWindowLayer as String] as? Int) == 0,
                   let raw = window[kCGWindowBounds as String] as? NSDictionary,
                   let bounds = CGRect(dictionaryRepresentation: raw), bounds.width > 40, bounds.height > 40 else { continue }
-            let rect = appKitRect(bounds, primaryTop: primary.frame.maxY)
-            if rect.contains(point) { return pids.contains(pid) ? rect : nil }
+            let rect = appKitRect(bounds, primaryTop: primaryTop)
+            if rect.contains(point) {
+                let owner = (window[kCGWindowOwnerName as String] as? String ?? "").lowercased()
+                let isRex = pids.contains(pid) || owner == "rex" || owner == "rex beta"
+                if isRex { return rect }
+                // Drag image feedback can itself be a small layer-zero window.
+                // It should not hide the app underneath the held file icon.
+                if bounds.width <= 256 && bounds.height <= 256 { continue }
+                return nil
+            }
         }
         return nil
     }
     func poll() {
         let board = NSPasteboard(name: .drag)
-        let pressed = NSEvent.pressedMouseButtons & 1 != 0
-        let files = board.canReadObject(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true])
+        let pressed = CGEventSource.buttonState(.combinedSessionState, button: .left) || NSEvent.pressedMouseButtons & 1 != 0
+        let files = board.types?.contains(.fileURL) == true || board.canReadObject(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true])
         let dragging = gate.update(change: board.changeCount, pressed: pressed, hasFiles: files)
-        if automatic, dragging, (!panel.isVisible || !showingDestinations), let rex = rexWindow(at: NSEvent.mouseLocation) {
+        if automatic, dragging, !autoList, (!panel.isVisible || !panel.frame.contains(NSEvent.mouseLocation)), let rex = rexWindow(at: NSEvent.mouseLocation) {
             showingDestinations = true; autoList = true; renderContent()
             // Reveal beside the pointer once. It remains still throughout the gesture.
             let mouse = NSEvent.mouseLocation
@@ -536,6 +645,7 @@ struct RexDropMain {
             exit(status)
         }
         let application = NSApplication.shared
+        if CommandLine.arguments.contains("--replace-running"), !AppLifecycle.replaceRunning() { exit(1) }
         let delegate = AppDelegate()
         if let argument = CommandLine.arguments.firstIndex(of: "--render-preview") {
             do {

@@ -26,17 +26,22 @@ cd rex-drop
 ```
 
 The app is built at `.build/Rex Drop.app`. It runs as a menu bar app and does
-not add a login item. Quit it from the menu bar when finished.
+not add a login item. `launch.sh` replaces the previous running build gracefully;
+finish or cancel active transfers before restarting. Quit it from the menu bar
+when finished. The destination panel stays hidden until a file drag reaches Rex.
 
 1. Open a local Rex shell or connect normally with `ssh your-host`.
 2. Drag files or folders from Finder over a visible Rex window. Available
-   destinations appear under the pointer: SSH first, then local folders, with
+   destination paths appear beside the pointer: SSH first, then local folders, with
    each group sorted alphabetically. Equivalent destinations appear once.
 3. Drop directly onto a destination. The transfer begins immediately and the
    destination list collapses into compact task progress.
 4. Pause, resume, cancel, or retry each task independently. A new drag reveals
    destinations while existing tasks continue. Successful transfers insert the
    resulting paths into the captured Rex pane without pressing Enter.
+5. ⌘-click a completed card to reveal the copied files in Finder. For SSH,
+   it opens a new Rex tab, connects using the captured SSH options, lists the
+   upload folder with `ls -ltr` (newest last), and leaves an interactive shell there.
 
 Two tasks can run concurrently. Local progress tracks copied bytes and entries;
 remote progress shows the current file's rsync progress. Cancelled or failed
@@ -76,6 +81,8 @@ that you want to receive the paths.
 - Native remote Rex sessions and SSH hops started inside an already remote
   shell require additional destination information and are outside this version.
 - Each row represents a destination, so you choose by dropping onto the row.
+  Its primary label is the local folder path or `user@host:/tmp`; SSH creates a
+  private subfolder there for each transfer.
   Duplicate destinations prefer a pane focused in its session's active window,
   with a stable pane-ID tie-break. The row's tooltip identifies that pane.
 - Local directory aliases are resolved before deduplication. SSH aliases use

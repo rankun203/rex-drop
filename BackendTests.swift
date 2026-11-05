@@ -56,6 +56,7 @@ private final class FakeRex {
     var processes: [String: [String: Any]] = [:]
     var argvByPID: [Int32: [String]] = [:]
     var sshConfigurations: [String: String] = [:]
+    var clients: [[String: Any]] = []
 
     func panes(_ definitions: [(String, Int32, String, String)], focused: String? = nil) {
         sessionsOverride = [["session_id": "session:one", "label": "Test session"]]
@@ -83,6 +84,13 @@ private final class FakeRex {
             return Data()
         }
         if command.count > 2 && command[2] == "send" { return Data() }
+        if command.count > 3 && command[2] == "window" && command[3] == "new" {
+            return try JSONSerialization.data(withJSONObject: ["window_id": "window:uploaded"])
+        }
+        if command.count > 3 && command[2] == "client" && command[3] == "ls" {
+            return try JSONSerialization.data(withJSONObject: ["clients": clients])
+        }
+        if command.count > 5 && command[4] == "do" && command[5] == "session.select" { return Data() }
         guard command.count > 4, command[2] == "api", command[3] == "call" else {
             throw TestFailure("Unexpected command: \(command)")
         }
@@ -201,6 +209,10 @@ private enum BackendTests {
             ("cancelling fully staged batch prevents publication", cancelBeforePublication),
             ("local progress reports monotonic completed work", localProgress),
             ("remote copy requests compatible rsync progress", rsyncProgress),
+            ("completed transfers capture actual local and remote destinations", completedDestinations),
+            ("remote destination opens exact SSH connection and upload directory", openRemoteDestination),
+            ("remote destination selects one identified local Rex app", selectOpenedRemoteWindow),
+            ("remote destination rejects malformed captured metadata", rejectRemoteDestination),
         ]
         var failures = 0
         for (name, test) in tests {
@@ -699,6 +711,75 @@ private enum BackendTests {
             try expect(!fake.rsyncs[0].contains(where: { $0.hasPrefix("--info=") || $0 == "--outbuf=L" }), "Remote progress requires newer rsync than macOS ships")
             try expect(updates.contains { $0.fraction == nil }, "Remote setup should report indeterminate work")
             try expect(updates.last?.fraction == 1, "Remote success omitted final progress")
+        }
+    }
+
+    static func completedDestinations() throws {
+        try temporary { root in
+            let source = root.appendingPathComponent("source"), destination = root.appendingPathComponent("destination")
+            try write("data", to: source); try mkdir(destination)
+            let fake = FakeRex(); fake.cwd = destination.path
+            let localService = fake.service(), localTarget = try localService.targets()[0]
+            let local = try localService.transfer(["target": localTarget, "paths": [source.path]])
+            let localOpen = local["open_destination"] as? [String: Any] ?? [:]
+            try expect(localOpen["kind"] as? String == "local" && localOpen["directory"] as? String == destination.path,
+                       "Local reveal omitted actual destination directory")
+            try expect(localOpen["paths"] as? [String] == [destination.appendingPathComponent("source").path], "Local reveal omitted copied paths")
+            fake.foregroundName = "ssh"
+            let remoteService = fake.service(), remoteTarget = try remoteService.targets()[0]
+            let remote = try remoteService.transfer(["target": remoteTarget, "paths": [source.path]])
+            let remoteOpen = remote["open_destination"] as? [String: Any] ?? [:]
+            try expect(remoteOpen["directory"] as? String == "/tmp/rex-drop.Ab12Cd34", "Remote reveal used /tmp instead of actual private directory")
+            try expect(remoteOpen["ssh_args"] as? [String] == Array(fake.sshArguments.dropFirst()), "Remote reveal lost original SSH identity")
+            try expect(remoteOpen["session_id"] as? String == "session:one", "Remote reveal lost original session")
+            try expect(remoteTarget["ssh_args"] == nil && remoteTarget["open_destination"] == nil, "Private connection options leaked into target metadata")
+        }
+    }
+
+    static func remoteMetadata() -> [String: Any] {
+        ["kind": "ssh", "session_id": "session:original", "directory": "/tmp/rex-drop.Ab12Cd34",
+         "ssh_args": ["-p", "2222", "-o", "IdentityFile=/keys/a b's", "user@example.test"]]
+    }
+
+    static func openRemoteDestination() throws {
+        let fake = FakeRex()
+        try fake.service().openRemoteDestination(remoteMetadata())
+        let command = fake.calls[0]
+        try expect(Array(command.prefix(6)) == ["/test/rex", "--autostart=false", "window", "new", "-s", "session:original"], "Remote tab targeted another session")
+        try expect(command.contains("--shell=none") && command.contains("--keep-open") && command.contains("--json"), "Remote tab should execute exact argv and retain connection errors")
+        guard let separator = command.firstIndex(of: "--") else { throw TestFailure("Command boundary missing") }
+        let ssh = Array(command.dropFirst(separator + 1))
+        try expect(Array(ssh.prefix(2)) == ["/usr/bin/ssh", "-t"], "Remote tab did not request an interactive SSH terminal")
+        let args = remoteMetadata()["ssh_args"] as! [String]
+        try expect(Array(ssh.suffix(args.count + 1).dropLast()) == args, "SSH identity or quote-containing option changed")
+        let words = DropService.shellWords(ssh.last ?? "") ?? []
+        try expect(Array(words.prefix(3)) == ["exec", "/bin/sh", "-c"], "Remote command lacks explicit POSIX shell")
+        try expect(words.count == 4 && words[3].contains("cd '/tmp/rex-drop.Ab12Cd34' && ls -ltr"), "Remote listing targets the wrong directory")
+        try expect(words[3].hasSuffix("exec \"${SHELL:-/bin/sh}\" -i"), "Interactive shell could reset upload directory")
+        try expect(!ssh.contains("RequestTTY=no") && !ssh.contains("StdinNull=yes"), "Reopen reused noninteractive upload settings")
+    }
+
+    static func selectOpenedRemoteWindow() throws {
+        let app: [String: Any] = ["client_id": "client:local", "info": ["kind": "app", "platform": "macos"],
+                                 "principal": ["transport": "unix", "uid": getuid()], "connection_state": "connected"]
+        let fake = FakeRex(); fake.clients = [app]
+        try fake.service().openRemoteDestination(remoteMetadata())
+        try expect(fake.calls.last == ["/test/rex", "--autostart=false", "-C", "client:local", "do", "session.select",
+                                      "session_id=session:original", "window_id=window:uploaded"], "Created tab was not selected on the identified Mac app")
+        let ambiguous = FakeRex(); ambiguous.clients = [app, app]
+        try ambiguous.service().openRemoteDestination(remoteMetadata())
+        try expect(!ambiguous.calls.contains { $0.contains("session.select") }, "Ambiguous local clients should retain their selected session")
+    }
+
+    static func rejectRemoteDestination() throws {
+        for key in ["directory", "ssh_args", "session_id"] {
+            var metadata = remoteMetadata()
+            if key == "directory" { metadata[key] = "/tmp/rex-drop.Ab12Cd34; echo bad" }
+            if key == "ssh_args" { metadata[key] = ["host", "echo bad"] }
+            if key == "session_id" { metadata[key] = "session:one\nother" }
+            let fake = FakeRex()
+            try expectThrows("unavailable") { try fake.service().openRemoteDestination(metadata) }
+            try expect(fake.calls.isEmpty, "Malformed reopen metadata executed an external command")
         }
     }
 }
