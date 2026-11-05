@@ -42,6 +42,7 @@ when finished. The progress window stays hidden until a transfer starts.
 4. Pause, resume, cancel, or retry each task independently. A new drag reveals
    destinations while existing tasks continue. Successful transfers insert the
    resulting paths into the captured Rex pane without pressing Enter.
+   Successful SSH transfers also copy shell-quoted remote paths to the clipboard.
 5. ⌘-click a completed card to reveal the copied files in Finder. For SSH,
    it opens a new Rex tab, connects using the captured SSH options, lists the
    upload folder with `ls -ltr` (newest last), and leaves an interactive shell there.

@@ -43,6 +43,10 @@ extension AppDelegate {
                     guard task.attempt == attempt else { return }
                     task.openDestination = response["open_destination"] as? [String: Any]
                     task.copiedPaths = response["paths"] as? [String] ?? []
+                    if target["kind"] as? String == "ssh" {
+                        let copied = ClipboardOutput.copyUploadedPaths(task.copiedPaths, kind: "ssh")
+                        task.phase = copied ? "Remote paths copied to clipboard" : "Uploaded; clipboard unavailable"
+                    }
                     task.state = .complete; self?.updateTask(task)
                 }
             } catch let conflict as LocalConflict {

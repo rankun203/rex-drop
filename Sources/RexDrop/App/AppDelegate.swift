@@ -75,7 +75,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         guard let button = statusItem.button else { return }
         // The status button renders template images using the menu bar's own
         // contrast and highlight appearance; the overlay only receives input.
-        let image = NSImage(systemSymbolName: "tray.and.arrow.down", accessibilityDescription: "Rex Drop")!
+        let image = NSImage(systemSymbolName: "icloud.and.arrow.up.fill", accessibilityDescription: "Rex Drop — upload to server")!
         image.isTemplate = true
         button.image = image
         button.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 16, weight: .regular)

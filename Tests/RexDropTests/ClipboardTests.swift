@@ -32,6 +32,28 @@ private func put(_ board: NSPasteboard, _ type: NSPasteboard.PasteboardType, _ d
 @Suite(.serialized)
 struct ClipboardTests {
     @Test
+    func testUploadedPathsReplaceClipboardWithShellSafeText() throws {
+        try isolated { board in
+            try put(board, .png, try image(.png))
+            let paths = ["/tmp/rex-drop.Ab12Cd34/a file's name.png", "/tmp/rex-drop.Ab12Cd34/second.png"]
+            #expect(ClipboardOutput.copyUploadedPaths(paths, kind: "ssh", board: board))
+            let text = try #require(board.string(forType: .string))
+            #expect(DropService.shellWords(text) == paths)
+            #expect(!text.contains("\n"))
+            #expect(board.data(forType: .png) == nil)
+        }
+    }
+
+    @Test
+    func testLocalOrEmptyResultsPreserveClipboard() throws {
+        try isolated { board in
+            try put(board, .string, Data("keep this".utf8))
+            #expect(!ClipboardOutput.copyUploadedPaths(["/example/local.png"], kind: "local", board: board))
+            #expect(!ClipboardOutput.copyUploadedPaths([], kind: "ssh", board: board))
+            #expect(board.string(forType: .string) == "keep this")
+        }
+    }
+    @Test
     func testFilesBeforeImages() throws {
         try isolated { board in
             let root = FileManager.default.temporaryDirectory.appendingPathComponent("rex-drop-clipboard-test-" + UUID().uuidString)
