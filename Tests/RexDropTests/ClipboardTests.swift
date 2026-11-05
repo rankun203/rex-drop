@@ -1,3 +1,5 @@
+import Testing
+@testable import RexDrop
 import AppKit
 import Darwin
 
@@ -27,29 +29,10 @@ private func put(_ board: NSPasteboard, _ type: NSPasteboard.PasteboardType, _ d
     try check(board.setData(data, forType: type), "Could not write isolated pasteboard")
 }
 
-@main
+@Suite(.serialized)
 struct ClipboardTests {
-    static func main() {
-        let cases: [(String, () throws -> Void)] = [
-            ("file URLs and folders take precedence over raw images", filesBeforeImages),
-            ("PNG data remains exact in a private generated image", pngCapture),
-            ("TIFF and JPEG clipboard images convert to PNG", imageConversions),
-            ("invalid PNG falls back to valid TIFF", pngFallback),
-            ("text, URLs and file promises are unavailable", unsupported),
-            ("invalid images produce a useful capture error", invalidImage),
-            ("payload cleanup preserves copied originals and removes generated images", cleanup),
-            ("availability checks inspect metadata without materializing data", metadataOnly),
-        ]
-        var failures = 0
-        for (name, body) in cases {
-            do { try body(); print("PASS " + name) }
-            catch { failures += 1; print("FAIL \(name): \(error)") }
-        }
-        print("\(cases.count - failures)/\(cases.count) clipboard tests passed")
-        exit(failures == 0 ? 0 : 1)
-    }
-
-    static func filesBeforeImages() throws {
+    @Test
+    func testFilesBeforeImages() throws {
         try isolated { board in
             let root = FileManager.default.temporaryDirectory.appendingPathComponent("rex-drop-clipboard-test-" + UUID().uuidString)
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
@@ -69,7 +52,8 @@ struct ClipboardTests {
         }
     }
 
-    static func pngCapture() throws {
+    @Test
+    func testPngCapture() throws {
         try isolated { board in
             let data = try image(.png)
             try put(board, .png, data)
@@ -85,7 +69,8 @@ struct ClipboardTests {
         }
     }
 
-    static func imageConversions() throws {
+    @Test
+    func testImageConversions() throws {
         for (type, format) in [(NSPasteboard.PasteboardType.tiff, NSBitmapImageRep.FileType.tiff), (NSPasteboard.PasteboardType("public.jpeg"), .jpeg)] {
             try isolated { board in
                 try put(board, type, image(format))
@@ -99,7 +84,8 @@ struct ClipboardTests {
         }
     }
 
-    static func pngFallback() throws {
+    @Test
+    func testPngFallback() throws {
         try isolated { board in
             try put(board, .png, Data("invalid".utf8))
             try check(board.setData(try image(.tiff), forType: .tiff), "Could not add TIFF fallback")
@@ -110,7 +96,8 @@ struct ClipboardTests {
         }
     }
 
-    static func unsupported() throws {
+    @Test
+    func testUnsupported() throws {
         for type in [NSPasteboard.PasteboardType.string, .URL, NSPasteboard.PasteboardType("com.apple.pasteboard.promised-file-url")] {
             try isolated { board in
                 try put(board, type, Data("https://example.test/".utf8))
@@ -126,7 +113,8 @@ struct ClipboardTests {
         }
     }
 
-    static func invalidImage() throws {
+    @Test
+    func testInvalidImage() throws {
         try isolated { board in
             try put(board, .png, Data([137, 80, 78, 71, 13, 10, 26, 10, 0]))
             do { _ = try ClipboardInput.capture(board: board); throw CheckFailure("Invalid image captured") }
@@ -134,7 +122,8 @@ struct ClipboardTests {
         }
     }
 
-    static func cleanup() throws {
+    @Test
+    func testCleanup() throws {
         try isolated { board in
             try put(board, .png, image(.png))
             var payload: ClipboardPayload? = try ClipboardInput.capture(board: board)
@@ -148,7 +137,8 @@ struct ClipboardTests {
         }
     }
 
-    static func metadataOnly() throws {
+    @Test
+    func testMetadataOnly() throws {
         final class Provider: NSObject, NSPasteboardItemDataProvider {
             var requests = 0
             func pasteboard(_ pasteboard: NSPasteboard?, item: NSPasteboardItem, provideDataForType type: NSPasteboard.PasteboardType) {

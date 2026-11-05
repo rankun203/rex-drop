@@ -1,6 +1,4 @@
 #!/bin/sh
+# Compatibility entry point; maintained scripts live in scripts/.
 set -eu
-cd "$(dirname "$0")"
-mkdir -p .build/module-cache
-xcrun swiftc -parse-as-library -module-cache-path .build/module-cache Clipboard.swift ClipboardTests.swift -o .build/clipboard-tests
-exec .build/clipboard-tests
+exec "$(dirname -- "$0")/scripts/clipboard-test.sh" "$@"

@@ -16,7 +16,7 @@ or Rex configuration.
 
 ## Try it
 
-Requires macOS 13+, Rex running locally, and Xcode Command Line Tools to
+Requires macOS 13+, Rex running locally, and Xcode Command Line Tools with Swift 6+ to
 build. SSH uploads also require `rsync` on the remote host and noninteractive SSH
 authentication (keys, an agent, or an existing multiplexed connection).
 
@@ -112,11 +112,37 @@ that you want to receive the paths.
 
 ## Development
 
+Open `Package.swift` in Xcode, or use Swift Package Manager from the terminal.
+The app is one executable module; files are grouped by responsibility without
+introducing extra library boundaries. Sources and tests follow the
+[SwiftPM target layout](https://developer.apple.com/documentation/xcode/creating-a-standalone-swift-package-with-xcode).
+
+```text
+Package.swift                 SwiftPM targets and macOS requirement
+Sources/RexDrop/
+  App/                        Entry point, lifecycle, application coordination
+  Models/                     Transfer state, destination and drag models
+  Services/                   Rex discovery, SSH, copy operations, clipboard
+  UI/                         AppKit views and presentation
+  Support/                    Small shared helpers and isolated previews
+Tests/
+  RexDropTests/               Backend, clipboard, and UI-state test suites
+  Integration/                Opt-in tests against a running Rex server
+Resources/Info.plist           App bundle metadata
+scripts/                      Build, launch, and test entry points
+docs/                         Screenshots
+.build/                       Generated binaries and Rex Drop.app (ignored)
+```
+
+The short scripts at the repository root forward to `scripts/` to preserve
+existing commands. Build metadata lives in `Resources/Info.plist`. The test
+wrapper selects Swift Testing and supplies its bundled macro path for Command
+Line Tools versions that omit it.
+
 ```sh
-./test.sh
-./clipboard-test.sh
-./build.sh
-".build/Rex Drop.app/Contents/MacOS/RexDrop" --self-test
+./scripts/test.sh
+./scripts/clipboard-test.sh
+./scripts/build.sh
 ".build/Rex Drop.app/Contents/MacOS/RexDrop" --smoke-test
 ```
 
@@ -130,7 +156,9 @@ Rex session, copies a temporary file and folder, verifies path insertion, and
 removes that session and its test files. Existing panes stay untouched.
 
 The app is written entirely in Swift using AppKit, Foundation, and macOS process
-APIs. `build.sh` compiles a standalone executable and ad-hoc signs the app. There are
+APIs. `scripts/build.sh` builds the SwiftPM release executable, bundles the plist,
+and ad-hoc signs the app. Unit and clipboard tests use Swift Testing; integration
+tests are skipped unless `REX_DROP_INTEGRATION=1` (`scripts/smoke.sh` sets it). There are
 no telemetry, background services, shell aliases, or configuration hooks.
 
 ## License

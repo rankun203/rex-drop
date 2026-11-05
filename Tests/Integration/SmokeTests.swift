@@ -1,9 +1,18 @@
 import Foundation
+import Testing
+@testable import RexDrop
 
-// Opt-in integration check: create one disposable Rex shell and clean it up.
-@main
-struct SmokeTests {
-    static func command(_ executable: String, _ arguments: [String], input: Data? = nil) throws -> Data {
+// These opt-in checks create and remove one disposable Rex session.
+@Suite(.serialized, .enabled(if: ProcessInfo.processInfo.environment["REX_DROP_INTEGRATION"] == "1"))
+struct RexIntegrationTests {
+
+    private var appExecutable: String {
+        if let configured = ProcessInfo.processInfo.environment["REX_DROP_APP_PATH"] { return configured }
+        let project = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        return project.appendingPathComponent(".build/Rex Drop.app/Contents/MacOS/RexDrop").path
+    }
+
+    private func command(_ executable: String, _ arguments: [String], input: Data? = nil) throws -> Data {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
@@ -20,16 +29,15 @@ struct SmokeTests {
         guard process.terminationStatus == 0 else { throw failure("Command failed: \(URL(fileURLWithPath: executable).lastPathComponent)") }
         return data
     }
-    static func failure(_ text: String) -> NSError {
+    private func failure(_ text: String) -> NSError {
         NSError(domain: "RexDropSmoke", code: 1, userInfo: [NSLocalizedDescriptionKey: text])
     }
-    static func object(_ data: Data) throws -> [String: Any] {
+    private func object(_ data: Data) throws -> [String: Any] {
         guard let value = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw failure("Invalid JSON") }
         return value
     }
-    static func check() throws {
-        guard CommandLine.arguments.count == 2 else { throw failure("Pass the built RexDrop executable path") }
-        let app = CommandLine.arguments[1]
+    @Test
+    func testNativeSSHProcessInspectionWithoutNetwork() throws {
         // Exercise real process inspection while a local ProxyCommand holds SSH open.
         // This probe never connects to a network host.
         let probe = Process()
@@ -46,7 +54,11 @@ struct SmokeTests {
               !(try DropService.processStart(probe.processIdentifier)).isEmpty
         else { throw failure("Native SSH process inspection failed") }
         probe.terminate()
-        print("PASS: native SSH argument and process identity inspection (no network).")
+    }
+
+    @Test
+    func testLiveRexDiscoveryCopyAndInsertion() throws {
+        let app = appExecutable
         let home = FileManager.default.homeDirectoryForCurrentUser
         let rex = home.appendingPathComponent("Library/Application Support/com.superlogical.rex/RexServer/Versions/Current/Rex Server.app/Contents/MacOS/rex").path
         let fm = FileManager.default
@@ -83,10 +95,5 @@ struct SmokeTests {
         let screen = try command(rex, ["--autostart=false", "capture", "-s", session, "-b", block, "--trim", "--unwrap"])
         let text = String(decoding: screen, as: UTF8.self)
         guard text.contains("sample"), text.contains("folder") else { throw failure("Paths were not inserted into the disposable pane") }
-        print("PASS: live Rex discovery, local file/folder copy, and path insertion. Disposable session cleaned up.")
-    }
-    static func main() {
-        do { try check() }
-        catch { FileHandle.standardError.write(Data((error.localizedDescription + "\n").utf8)); exit(1) }
     }
 }

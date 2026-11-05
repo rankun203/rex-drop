@@ -1,3 +1,5 @@
+import Testing
+@testable import RexDrop
 import Foundation
 import Darwin
 
@@ -169,67 +171,10 @@ private final class PauseProgress {
     }
 }
 
-@main
-private enum BackendTests {
-    static func main() {
-        let tests: [(String, () throws -> Void)] = [
-            ("SSH preserves connection flags and drops forwarding", sshOptions),
-            ("SSH rejects ambiguous and nested invocations", sshRejections),
-            ("sources validate paths, duplicates and root symlinks", sourceValidation),
-            ("local copies preserve names, content and nested symlinks", localCopy),
-            ("local collisions preserve existing content", localCollision),
-            ("dangling symlink destination collision", danglingCollision),
-            ("folder into its descendant is rejected", descendant),
-            ("staging failure publishes no files", stagingFailure),
-            ("local environment removes Rex endpoint overrides", environment),
-            ("invalid API JSON returns a clean error", invalidAPI),
-            ("enumeration deduplicates blocks and selects coding agents", enumeration),
-            ("remote Rex blocks avoid local process inspection", remoteBlock),
-            ("editors are unsupported", unsupportedEditor),
-            ("SSH fingerprints change without exposing private argv", fingerprint),
-            ("local transfer pins pane and inserts quoted paths without Enter", localTransfer),
-            ("changed process after copy prevents insertion", staleTransfer),
-            ("remote rsync preserves safe source and connection arguments", remoteTransfer),
-            ("unexpected SSH temporary output prevents rsync", unexpectedRemotePath),
-            ("failed remote transfer reports partial directory", failedRemoteTransfer),
-            ("changed selection prevents copying", changedSelection),
-            ("shell quoting preserves apostrophes", quoting),
-            ("command errors hide private stderr", commandError),
-            ("command timeout returns promptly", commandTimeout),
-            ("local destinations deduplicate canonical paths", localDestinationDeduplication),
-            ("SSH aliases deduplicate effective destinations", sshDestinationDeduplication),
-            ("SSH destination identity retains distinct user and port", distinctSSHDestinations),
-            ("SSH destinations sort before alphabetized local folders", destinationSorting),
-            ("focused representative remains deterministic and pane revalidation stays independent", representativeSelection),
-            ("pause blocks checkpoints until resumed", pauseResume),
-            ("pausing local copy freezes progress until resumed", pauseLocalCopy),
-            ("cancelling paused task wakes its checkpoint promptly", cancelPaused),
-            ("cancelling subprocess terminates it promptly", cancelSubprocess),
-            ("local cancellation prevents publish and pane input", cancelLocalTransfer),
-            ("cancelling fully staged batch prevents publication", cancelBeforePublication),
-            ("local progress reports monotonic completed work", localProgress),
-            ("remote copy requests compatible rsync progress", rsyncProgress),
-            ("completed transfers capture actual local and remote destinations", completedDestinations),
-            ("remote destination opens exact SSH connection and upload directory", openRemoteDestination),
-            ("remote destination selects one identified local Rex app", selectOpenedRemoteWindow),
-            ("remote destination rejects malformed captured metadata", rejectRemoteDestination),
-            ("local conflicts expose choices before copying", conflictChoices),
-            ("Keep Both reserves batch names and preserves originals", keepBoth),
-            ("Replace handles folders and symlinks and rejects source aliases", replaceEntries),
-            ("cancelling replacement restores original batch", cancelReplacement),
-            ("publication race restores siblings and preserves new writer", publicationRace),
-            ("rollback retains concurrent edits inside a published folder", rollbackFolderEdits),
-        ]
-        var failures = 0
-        for (name, test) in tests {
-            do { try test(); print("PASS \(name)") }
-            catch { failures += 1; print("FAIL \(name): \(error)") }
-        }
-        print("\(tests.count - failures)/\(tests.count) tests passed")
-        if failures > 0 { exit(1) }
-    }
-
-    static func sshOptions() throws {
+@Suite(.serialized)
+struct BackendTests {
+    @Test
+    func testSshOptions() throws {
         let parsed = DropService.parseSSH(["-t", "-p2222", "-J", "jump.example.test", "-L", "9000:local:90",
                                            "-o", "IdentityFile=/keys/a b's", "user@example.test", "tmux", "attach"])
         try expect(parsed == ["-p", "2222", "-J", "jump.example.test", "-o", "IdentityFile=/keys/a b's", "user@example.test"], "Connection options changed")
@@ -237,7 +182,8 @@ private enum BackendTests {
                    ["-o", "ProxyCommand=proxy 'a b'", "example.test"], "Quoted SSH option changed")
     }
 
-    static func sshRejections() throws {
+    @Test
+    func testSshRejections() throws {
         let invalid: [[String]] = [[], ["-N", "example.test"], ["-W", "host:22", "jump.example.test"],
             ["-o", "LocalCommand=bad", "example.test"], ["-p"], ["host;bad"], ["--", "-host"],
             ["example.test", "ssh inner"], ["example.test", "/usr/bin/ssh", "inner"],
@@ -245,7 +191,8 @@ private enum BackendTests {
         for args in invalid { try expect(DropService.parseSSH(args) == nil, "Accepted unsafe SSH arguments: \(args)") }
     }
 
-    static func sourceValidation() throws {
+    @Test
+    func testSourceValidation() throws {
         try temporary { root in
             let file = root.appendingPathComponent("a file's name")
             let folder = root.appendingPathComponent("folder")
@@ -266,7 +213,8 @@ private enum BackendTests {
         }
     }
 
-    static func localCopy() throws {
+    @Test
+    func testLocalCopy() throws {
         try temporary { root in
             let source = root.appendingPathComponent("source"), destination = root.appendingPathComponent("destination")
             try mkdir(source); try mkdir(destination)
@@ -286,7 +234,8 @@ private enum BackendTests {
         }
     }
 
-    static func localCollision() throws {
+    @Test
+    func testLocalCollision() throws {
         try temporary { root in
             let file = root.appendingPathComponent("item"), destination = root.appendingPathComponent("target")
             try write("new", to: file); try mkdir(destination)
@@ -298,7 +247,8 @@ private enum BackendTests {
         }
     }
 
-    static func danglingCollision() throws {
+    @Test
+    func testDanglingCollision() throws {
         try temporary { root in
             let file = root.appendingPathComponent("item"), destination = root.appendingPathComponent("target")
             try write("new", to: file); try mkdir(destination)
@@ -309,7 +259,8 @@ private enum BackendTests {
         }
     }
 
-    static func descendant() throws {
+    @Test
+    func testDescendant() throws {
         try temporary { root in
             let child = root.appendingPathComponent("child"); try mkdir(child)
             try expectThrows("descendant") { _ = try DropService.copyLocal([root.path], directory: child.path) }
@@ -317,7 +268,8 @@ private enum BackendTests {
         }
     }
 
-    static func enumeration() throws {
+    @Test
+    func testEnumeration() throws {
         let fake = FakeRex(); fake.foregroundName = "codex"
         let targets = try fake.service().targets()
         try expect(targets.count == 1, "Repeated block was enumerated twice")
@@ -329,7 +281,8 @@ private enum BackendTests {
         }
     }
 
-    static func stagingFailure() throws {
+    @Test
+    func testStagingFailure() throws {
         try temporary { root in
             let file = root.appendingPathComponent("item"), destination = root.appendingPathComponent("destination")
             try write("data", to: file); try mkdir(destination)
@@ -342,30 +295,35 @@ private enum BackendTests {
         }
     }
 
-    static func environment() throws {
+    @Test
+    func testEnvironment() throws {
         let actual = DropService.localEnvironment(["REX_SERVER": "remote:1234", "REX_SESSION": "other", "REX_BIN_DIR": "/remote", "KEEP": "yes"])
         try expect(actual == ["KEEP": "yes"], "Local Rex endpoint overrides survived")
     }
 
-    static func invalidAPI() throws {
+    @Test
+    func testInvalidAPI() throws {
         let service = DropService(runner: { _, _, _ in Data("bad json".utf8) }, rexPath: "/test/rex")
         try expectThrows("invalid API response") { _ = try service.targets() }
     }
 
-    static func remoteBlock() throws {
+    @Test
+    func testRemoteBlock() throws {
         let fake = FakeRex(); fake.blockHost = "remote"
         let targets = try fake.service().targets()
         try expect(targets.isEmpty, "Remote Rex pane appeared as drop destination")
         try expect(fake.processCalls == 0, "Inspected local PID for remote Rex pane")
     }
 
-    static func unsupportedEditor() throws {
+    @Test
+    func testUnsupportedEditor() throws {
         let fake = FakeRex(); fake.foregroundName = "nvim"
         let targets = try fake.service().targets()
         try expect(targets.isEmpty, "Editor appeared as drop destination")
     }
 
-    static func fingerprint() throws {
+    @Test
+    func testFingerprint() throws {
         let fake = FakeRex(); fake.foregroundName = "ssh"
         let service = fake.service(), first = try service.targets()[0]
         let json = String(decoding: try JSONSerialization.data(withJSONObject: first), as: UTF8.self)
@@ -375,7 +333,8 @@ private enum BackendTests {
         try expect(first["fingerprint"] as? String != second["fingerprint"] as? String, "Connection change retained fingerprint")
     }
 
-    static func localTransfer() throws {
+    @Test
+    func testLocalTransfer() throws {
         try temporary { root in
             let source = root.appendingPathComponent("a file's name"), destination = root.appendingPathComponent("destination")
             try write("data", to: source); try mkdir(destination)
@@ -394,7 +353,8 @@ private enum BackendTests {
         }
     }
 
-    static func staleTransfer() throws {
+    @Test
+    func testStaleTransfer() throws {
         try temporary { root in
             let source = root.appendingPathComponent("item"), destination = root.appendingPathComponent("destination")
             try write("data", to: source); try mkdir(destination)
@@ -406,7 +366,8 @@ private enum BackendTests {
         }
     }
 
-    static func remoteTransfer() throws {
+    @Test
+    func testRemoteTransfer() throws {
         try temporary { root in
             let source = root.appendingPathComponent("-a file's name"); try write("data", to: source)
             let fake = FakeRex(); fake.foregroundName = "ssh"
@@ -427,7 +388,8 @@ private enum BackendTests {
         }
     }
 
-    static func unexpectedRemotePath() throws {
+    @Test
+    func testUnexpectedRemotePath() throws {
         try temporary { root in
             let source = root.appendingPathComponent("item"); try write("data", to: source)
             for output in ["/tmp/rex-drop.ABCDEFGH; bad", "/tmp/rex-drop.ABCDEFGH\nnoise", "/tmp/other.ABCDEFGH", "/tmp/rex-drop.short"] {
@@ -439,7 +401,8 @@ private enum BackendTests {
         }
     }
 
-    static func failedRemoteTransfer() throws {
+    @Test
+    func testFailedRemoteTransfer() throws {
         try temporary { root in
             let source = root.appendingPathComponent("item"); try write("data", to: source)
             let fake = FakeRex(); fake.foregroundName = "ssh"; fake.failRsync = true
@@ -449,7 +412,8 @@ private enum BackendTests {
         }
     }
 
-    static func changedSelection() throws {
+    @Test
+    func testChangedSelection() throws {
         try temporary { root in
             let source = root.appendingPathComponent("item"), destination = root.appendingPathComponent("destination")
             try write("data", to: source); try mkdir(destination)
@@ -462,11 +426,13 @@ private enum BackendTests {
         }
     }
 
-    static func quoting() throws {
+    @Test
+    func testQuoting() throws {
         try expect(DropService.shellQuote("/tmp/a file's name") == "'/tmp/a file'\"'\"'s name'", "Apostrophe shell quoting changed")
     }
 
-    static func commandError() throws {
+    @Test
+    func testCommandError() throws {
         do {
             _ = try DropService.run(["/bin/sh", "-c", "printf 'private key /secret/key' >&2; exit 1"], 2, nil)
             throw TestFailure("Failed process was accepted")
@@ -477,13 +443,15 @@ private enum BackendTests {
         }
     }
 
-    static func commandTimeout() throws {
+    @Test
+    func testCommandTimeout() throws {
         let start = Date()
         try expectThrows("timed out") { _ = try DropService.run(["/bin/sleep", "10"], 0.05, nil) }
         try expect(Date().timeIntervalSince(start) < 4, "Timed out process remained blocking")
     }
 
-    static func localDestinationDeduplication() throws {
+    @Test
+    func testLocalDestinationDeduplication() throws {
         try temporary { root in
             let folder = root.appendingPathComponent("Shared"), alias = root.appendingPathComponent("alias")
             try mkdir(folder)
@@ -500,7 +468,8 @@ private enum BackendTests {
         }
     }
 
-    static func sshDestinationDeduplication() throws {
+    @Test
+    func testSshDestinationDeduplication() throws {
         let fake = FakeRex()
         fake.panes([("block:b", 42, "ssh", "/"), ("block:a", 41, "ssh", "/")])
         fake.argvByPID = [41: ["ssh", "-i", "/keys/one", "alias-one"], 42: ["ssh", "-i", "/keys/two", "alias-two"]]
@@ -514,7 +483,8 @@ private enum BackendTests {
         try expect(!serialized.contains("/keys/"), "Connection identity leaked into destination metadata")
     }
 
-    static func distinctSSHDestinations() throws {
+    @Test
+    func testDistinctSSHDestinations() throws {
         let fake = FakeRex()
         fake.panes([("block:a", 41, "ssh", "/"), ("block:b", 42, "ssh", "/"), ("block:c", 43, "ssh", "/")])
         fake.argvByPID = [41: ["ssh", "default"], 42: ["ssh", "other-user"], 43: ["ssh", "other-port"]]
@@ -527,7 +497,8 @@ private enum BackendTests {
         try expect(Set(names) == Set(["alice@shared.example.test", "bob@shared.example.test", "alice@shared.example.test:2222"]), "SSH identity display changed")
     }
 
-    static func destinationSorting() throws {
+    @Test
+    func testDestinationSorting() throws {
         let fake = FakeRex()
         fake.panes([("block:z", 41, "zsh", "/project/Zebra"), ("block:y", 42, "ssh", "/"),
                     ("block:a", 43, "zsh", "/project/alpha"), ("block:b", 44, "ssh", "/")])
@@ -539,7 +510,8 @@ private enum BackendTests {
         try expect(targets.compactMap { $0["display_name"] as? String } == ["alice@alpha.example.test", "Bob@zulu.example.test", "alpha", "Zebra"], "Destination alphabetization changed")
     }
 
-    static func representativeSelection() throws {
+    @Test
+    func testRepresentativeSelection() throws {
         let fake = FakeRex()
         fake.panes([("block:a", 41, "zsh", "/project"), ("block:z", 42, "zsh", "/project")], focused: "block:z")
         let service = fake.service()
@@ -556,7 +528,8 @@ private enum BackendTests {
         try expect(unfocused[0]["block_id"] as? String == "block:a", "Unfocused representative was nondeterministic")
     }
 
-    static func pauseResume() throws {
+    @Test
+    func testPauseResume() throws {
         let control = DropTaskControl(), result = AsyncResult(), entered = DispatchSemaphore(value: 0)
         control.pause()
         defer { control.cancel() }
@@ -572,7 +545,8 @@ private enum BackendTests {
         try expect(result.error == nil && !control.isPaused, "Resume left checkpoint in error")
     }
 
-    static func cancelPaused() throws {
+    @Test
+    func testCancelPaused() throws {
         let control = DropTaskControl(), result = AsyncResult(), entered = DispatchSemaphore(value: 0)
         control.pause()
         defer { control.cancel() }
@@ -589,7 +563,8 @@ private enum BackendTests {
         try expect(control.isCancelled && !control.isPaused, "Cancelled task retained paused state")
     }
 
-    static func pauseLocalCopy() throws {
+    @Test
+    func testPauseLocalCopy() throws {
         try temporary { root in
             let source = root.appendingPathComponent("item"), destination = root.appendingPathComponent("destination")
             try Data(repeating: 65, count: 2 * 1024 * 1024).write(to: source); try mkdir(destination)
@@ -612,7 +587,8 @@ private enum BackendTests {
         }
     }
 
-    static func cancelSubprocess() throws {
+    @Test
+    func testCancelSubprocess() throws {
         let control = DropTaskControl(), result = AsyncResult(), running = DispatchSemaphore(value: 0)
         defer { control.cancel() }
         DispatchQueue.global().async {
@@ -635,7 +611,8 @@ private enum BackendTests {
         try expect(Darwin.kill(pid, 0) == -1 && errno == ESRCH, "Cancelled subprocess remained alive")
     }
 
-    static func cancelLocalTransfer() throws {
+    @Test
+    func testCancelLocalTransfer() throws {
         try temporary { root in
             let source = root.appendingPathComponent("item"), destination = root.appendingPathComponent("destination")
             try Data(repeating: 65, count: 2 * 1024 * 1024).write(to: source); try mkdir(destination)
@@ -656,7 +633,8 @@ private enum BackendTests {
         }
     }
 
-    static func localProgress() throws {
+    @Test
+    func testLocalProgress() throws {
         try temporary { root in
             let source = root.appendingPathComponent("source"), destination = root.appendingPathComponent("destination")
             try mkdir(source); try mkdir(destination)
@@ -684,7 +662,8 @@ private enum BackendTests {
         }
     }
 
-    static func cancelBeforePublication() throws {
+    @Test
+    func testCancelBeforePublication() throws {
         try temporary { root in
             let source = root.appendingPathComponent("item"), destination = root.appendingPathComponent("destination")
             try write("staged data", to: source); try mkdir(destination)
@@ -706,7 +685,8 @@ private enum BackendTests {
         }
     }
 
-    static func rsyncProgress() throws {
+    @Test
+    func testRsyncProgress() throws {
         try temporary { root in
             let file = root.appendingPathComponent("item"); try write("data", to: file)
             let fake = FakeRex(); fake.foregroundName = "ssh"
@@ -720,7 +700,8 @@ private enum BackendTests {
         }
     }
 
-    static func completedDestinations() throws {
+    @Test
+    func testCompletedDestinations() throws {
         try temporary { root in
             let source = root.appendingPathComponent("source"), destination = root.appendingPathComponent("destination")
             try write("data", to: source); try mkdir(destination)
@@ -742,12 +723,13 @@ private enum BackendTests {
         }
     }
 
-    static func remoteMetadata() -> [String: Any] {
+    private func remoteMetadata() -> [String: Any] {
         ["kind": "ssh", "session_id": "session:original", "directory": "/tmp/rex-drop.Ab12Cd34",
          "ssh_args": ["-p", "2222", "-o", "IdentityFile=/keys/a b's", "user@example.test"]]
     }
 
-    static func openRemoteDestination() throws {
+    @Test
+    func testOpenRemoteDestination() throws {
         let fake = FakeRex()
         try fake.service().openRemoteDestination(remoteMetadata())
         let command = fake.calls[0]
@@ -765,7 +747,8 @@ private enum BackendTests {
         try expect(!ssh.contains("RequestTTY=no") && !ssh.contains("StdinNull=yes"), "Reopen reused noninteractive upload settings")
     }
 
-    static func selectOpenedRemoteWindow() throws {
+    @Test
+    func testSelectOpenedRemoteWindow() throws {
         let app: [String: Any] = ["client_id": "client:local", "info": ["kind": "app", "platform": "macos"],
                                  "principal": ["transport": "unix", "uid": getuid()], "connection_state": "connected"]
         let fake = FakeRex(); fake.clients = [app]
@@ -777,7 +760,8 @@ private enum BackendTests {
         try expect(!ambiguous.calls.contains { $0.contains("session.select") }, "Ambiguous local clients should retain their selected session")
     }
 
-    static func rejectRemoteDestination() throws {
+    @Test
+    func testRejectRemoteDestination() throws {
         for key in ["directory", "ssh_args", "session_id"] {
             var metadata = remoteMetadata()
             if key == "directory" { metadata[key] = "/tmp/rex-drop.Ab12Cd34; echo bad" }
@@ -789,7 +773,8 @@ private enum BackendTests {
         }
     }
 
-    static func conflictChoices() throws {
+    @Test
+    func testConflictChoices() throws {
         try temporary { root in
             let source = root.appendingPathComponent("item"), destination = root.appendingPathComponent("destination")
             try write("new", to: source); try mkdir(destination); try write("old", to: destination.appendingPathComponent("item"))
@@ -806,7 +791,8 @@ private enum BackendTests {
         }
     }
 
-    static func keepBoth() throws {
+    @Test
+    func testKeepBoth() throws {
         try temporary { root in
             let source = root.appendingPathComponent("source"), destination = root.appendingPathComponent("destination")
             try mkdir(source); try mkdir(destination)
@@ -826,7 +812,8 @@ private enum BackendTests {
         }
     }
 
-    static func replaceEntries() throws {
+    @Test
+    func testReplaceEntries() throws {
         try temporary { root in
             let source = root.appendingPathComponent("source"), destination = root.appendingPathComponent("destination")
             try mkdir(source); try mkdir(destination)
@@ -851,7 +838,8 @@ private enum BackendTests {
         }
     }
 
-    static func cancelReplacement() throws {
+    @Test
+    func testCancelReplacement() throws {
         try temporary { root in
             let source = root.appendingPathComponent("source"), destination = root.appendingPathComponent("destination")
             try mkdir(source); try mkdir(destination)
@@ -866,7 +854,8 @@ private enum BackendTests {
         }
     }
 
-    static func publicationRace() throws {
+    @Test
+    func testPublicationRace() throws {
         try temporary { root in
             let source = root.appendingPathComponent("source"), destination = root.appendingPathComponent("destination")
             try mkdir(source); try mkdir(destination)
@@ -882,7 +871,8 @@ private enum BackendTests {
         }
     }
 
-    static func rollbackFolderEdits() throws {
+    @Test
+    func testRollbackFolderEdits() throws {
         try temporary { root in
             let source = root.appendingPathComponent("source"), destination = root.appendingPathComponent("destination")
             try mkdir(source); try mkdir(destination)

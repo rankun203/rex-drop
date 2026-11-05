@@ -1,6 +1,4 @@
 #!/bin/sh
+# Compatibility entry point; maintained scripts live in scripts/.
 set -eu
-cd "$(dirname "$0")"
-mkdir -p .build/module-cache
-xcrun swiftc -parse-as-library -module-cache-path .build/module-cache Backend.swift BackendTests.swift -o .build/backend-tests
-exec .build/backend-tests
+exec "$(dirname -- "$0")/scripts/test.sh" "$@"
