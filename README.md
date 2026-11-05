@@ -11,6 +11,7 @@ or Rex configuration.
 <p>
   <img src="docs/destinations.png" width="360" alt="Deduplicated SSH and local drop destinations">
   <img src="docs/progress.png" width="360" alt="Compact transfer progress with per-task controls">
+  <img src="docs/conflicts.png" width="360" alt="Inline Keep Both and Replace choices">
 </p>
 
 ## Try it
@@ -35,8 +36,9 @@ when finished. The progress window stays hidden until a transfer starts.
 2. Drag files or folders from Finder onto the Rex Drop menu-bar icon. Available
    destination paths appear beneath the icon: SSH first, then local folders, with
    each group sorted alphabetically. Equivalent destinations appear once.
-3. Drop directly onto a destination. The transfer begins immediately and the
-   path list closes and a compact progress window appears.
+3. Drop directly onto a destination. The path list closes and a compact progress
+   row appears. Existing local names offer **Keep Both**, **Replace**, and **Cancel**
+   inline; your choice applies to conflicts in that drop.
 4. Pause, resume, cancel, or retry each task independently. A new drag reveals
    destinations while existing tasks continue. Successful transfers insert the
    resulting paths into the captured Rex pane without pressing Enter.
@@ -47,7 +49,8 @@ when finished. The progress window stays hidden until a transfer starts.
 Two tasks can run concurrently. Local progress tracks copied bytes and entries;
 remote progress shows the current file's rsync progress. Cancelled or failed
 transfers may leave a partial destination; retries start a fresh transfer and
-preserve existing local files.
+ask again about existing local names. Each task uses one row; actual errors add
+a second line with the explanation.
 
 Clicking the menu-bar icon opens the same path list. Right-click it for app
 commands. File reception uses native AppKit drag-destination callbacks; there
@@ -62,11 +65,17 @@ by browsers or Photos are not supported; save them to Finder first.
 | Local shell or supported coding agent | Its current working directory |
 | Local terminal running SSH | A private `/tmp/rex-drop.XXXXXXXX/` on that SSH host |
 
-Local copies refuse existing destination names. Remote transfers use `rsync`
+**Keep Both** adds a number to conflicting names. **Replace** replaces the
+existing items after staging the new copies; replacing a folder replaces that
+folder's contents as a whole. Remote transfers use `rsync`
 with a unique destination directory, preserving file and folder names. There is
 no delete/synchronization mode. Uploaded temporary directories remain available
 for the remote program; remove them when finished or let the host's normal
 temporary-file cleanup handle them.
+
+Interrupted local publication restores originals where possible and can retain a
+recovery directory named in the task error, preserving copies that another app
+may already have edited.
 
 Rex Drop pins the selected pane and process when you drop. It checks them again
 before transfer and before inserting paths. A changed directory, process, or

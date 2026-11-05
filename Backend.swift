@@ -8,6 +8,18 @@ struct DropFailure: LocalizedError {
     var errorDescription: String? { message }
 }
 
+enum CollisionPolicy: String { case ask, keepBoth, replace }
+
+struct LocalConflict: LocalizedError, CustomStringConvertible {
+    let paths: [String]
+    var recoveryDirectory: String? = nil
+    var errorDescription: String? {
+        "\(paths.count) destination item(s) already exists. Choose Keep Both or Replace." +
+            (recoveryDirectory.map { " Copies retained for recovery in \($0)." } ?? "")
+    }
+    var description: String { errorDescription ?? "Destination items already exist." }
+}
+
 struct DropProgress {
     let phase: String
     let currentFile: String
@@ -522,7 +534,7 @@ final class DropService {
         return lstat(path, &value) == 0 ? value : nil
     }
 
-    static func validateSources(_ paths: [String]) throws -> [String] {
+    static func validateSources(_ paths: [String], allowDuplicateBasenames: Bool = false) throws -> [String] {
         guard !paths.isEmpty else { throw DropFailure("Choose one or more files or folders.") }
         var result: [String] = [], names: Set<String> = []
         for value in paths {
@@ -534,7 +546,7 @@ final class DropService {
             guard let status = info(path), (status.st_mode & S_IFMT == S_IFREG || status.st_mode & S_IFMT == S_IFDIR), path != "/" else {
                 throw DropFailure("Choose regular files and folders; root symlinks and devices are unsupported.")
             }
-            guard names.insert(name).inserted else { throw DropFailure("Dropped items have duplicate basenames. Transfer them separately.") }
+            if !names.insert(name).inserted && !allowDuplicateBasenames { throw DropFailure("Dropped items have duplicate basenames. Transfer them separately.") }
             result.append(path)
         }
         return result
@@ -542,7 +554,8 @@ final class DropService {
 
     static func copyLocal(_ paths: [String], directory: String,
                           control: DropTaskControl = DropTaskControl(),
-                          progress: @escaping (DropProgress) -> Void = { _ in }) throws -> [String] {
+                          progress: @escaping (DropProgress) -> Void = { _ in },
+                          collisionPolicy: CollisionPolicy = .ask) throws -> [String] {
         try control.checkpoint()
         let manager = FileManager.default, root = URL(fileURLWithPath: directory).standardizedFileURL
         guard !hasControls(directory), let rootInfo = info(root.path), rootInfo.st_mode & S_IFMT == S_IFDIR else {
@@ -555,9 +568,48 @@ final class DropService {
                 throw DropFailure("A folder cannot be copied into itself or one of its descendants.")
             }
         }
-        let destinations = paths.map { root.appendingPathComponent(($0 as NSString).lastPathComponent).path }
-        if let existing = destinations.first(where: { info($0) != nil }) {
-            throw DropFailure("\((existing as NSString).lastPathComponent) already exists in \(directory). Rename it or choose another folder.")
+        var destinations = paths.map { root.appendingPathComponent(($0 as NSString).lastPathComponent).path }
+        let conflicts = destinations.filter { info($0) != nil }
+        if collisionPolicy == .ask && !conflicts.isEmpty { throw LocalConflict(paths: conflicts) }
+        let originalNames = Set(destinations.map { ($0 as NSString).lastPathComponent.lowercased() })
+        var plannedNames: Set<String> = []
+        func unusedDestination(for source: String) throws -> String {
+            let name = (source as NSString).lastPathComponent
+            let isDirectory = info(source).map { $0.st_mode & S_IFMT == S_IFDIR } ?? false
+            let ext = isDirectory ? "" : (name as NSString).pathExtension
+            let stem = ext.isEmpty ? name : (name as NSString).deletingPathExtension
+            for number in 2...100_000 {
+                let candidate = stem + " \(number)" + (ext.isEmpty ? "" : "." + ext)
+                let path = root.appendingPathComponent(candidate).path
+                if !originalNames.contains(candidate.lowercased()) && !plannedNames.contains(candidate.lowercased()) && info(path) == nil {
+                    plannedNames.insert(candidate.lowercased()); return path
+                }
+            }
+            throw DropFailure("Could not choose an unused filename.")
+        }
+        if collisionPolicy == .keepBoth {
+            for index in paths.indices {
+                let name = (destinations[index] as NSString).lastPathComponent.lowercased()
+                if info(destinations[index]) != nil || plannedNames.contains(name) { destinations[index] = try unusedDestination(for: paths[index]) }
+                else { plannedNames.insert(name) }
+            }
+        }
+        let sourceIdentities = paths.compactMap { info($0) }
+        let realSources = paths.map { URL(fileURLWithPath: $0).resolvingSymlinksInPath().path }
+        func unsafeReplacement(_ destination: String, _ existing: stat) -> Bool {
+            let realDestination = URL(fileURLWithPath: destination).resolvingSymlinksInPath().path
+            return sourceIdentities.contains { $0.st_dev == existing.st_dev && $0.st_ino == existing.st_ino } ||
+                realSources.contains { source in
+                    source == realDestination || (existing.st_mode & S_IFMT == S_IFDIR && source.hasPrefix(realDestination + "/"))
+                }
+        }
+        if collisionPolicy == .replace {
+            for destination in destinations {
+                guard let existing = info(destination) else { continue }
+                if unsafeReplacement(destination, existing) {
+                    throw DropFailure("A dropped item cannot replace itself or a folder containing another dropped item. Choose Keep Both.")
+                }
+            }
         }
         var totalBytes: Int64 = 0, totalFiles = 0, completedBytes: Int64 = 0, completedFiles = 0
         func scan(_ path: String) throws {
@@ -638,20 +690,81 @@ final class DropService {
         let stage = root.appendingPathComponent(".rex-drop-" + UUID().uuidString)
         do { try manager.createDirectory(at: stage, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700]) }
         catch { throw DropFailure("Cannot create a staging directory in the shell directory.") }
-        defer { try? manager.removeItem(at: stage) }
+        var preserveStage = false
+        defer { if !preserveStage { try? manager.removeItem(at: stage) } }
+        let stagedPaths = paths.indices.map { stage.appendingPathComponent("item-\($0)").path }
         do {
-            for path in paths { try copy(path, stage.appendingPathComponent((path as NSString).lastPathComponent).path) }
+            for index in paths.indices { try copy(paths[index], stagedPaths[index]) }
         } catch {
             if control.isCancelled { throw DropFailure("Transfer cancelled. Partial copies may remain.") }
             throw (error as? DropFailure) ?? DropFailure("Could not read or stage a dropped item. Check file permissions and available space.")
         }
-        for destination in destinations {
-            try control.checkpoint()
-            let staged = stage.appendingPathComponent((destination as NSString).lastPathComponent).path
-            // Same-volume atomic publication rejects even race-time collisions.
-            guard renamex_np(staged, destination, UInt32(RENAME_EXCL)) == 0 else {
-                throw DropFailure("Local copy failed or a basename appeared. Partial copies may remain in the shell directory.")
+        var backups: [Int: String] = [:], published: [Int: stat] = [:]
+        do {
+            for index in paths.indices {
+                try control.checkpoint()
+                progress(DropProgress(phase: "Publishing", currentFile: (destinations[index] as NSString).lastPathComponent,
+                                      completedFiles: completedFiles, totalFiles: totalFiles, fraction: 1))
+                try control.checkpoint()
+                if collisionPolicy == .replace && info(destinations[index]) != nil {
+                    if let existing = info(destinations[index]), unsafeReplacement(destinations[index], existing) {
+                        throw DropFailure("A replacement became a dropped source. Choose Keep Both.")
+                    }
+                    let backup = stage.appendingPathComponent("original-\(index)").path
+                    // Keep originals on the same volume until the entire batch
+                    // publishes. Move the entry itself, including symlinks.
+                    guard renamex_np(destinations[index], backup, UInt32(RENAME_EXCL)) == 0 else {
+                        throw DropFailure("A destination changed before replacement. Try again.")
+                    }
+                    backups[index] = backup
+                    if let existing = info(backup), sourceIdentities.contains(where: { $0.st_dev == existing.st_dev && $0.st_ino == existing.st_ino }) {
+                        throw DropFailure("A replacement became a dropped source. Choose Keep Both.")
+                    }
+                    progress(DropProgress(phase: "Replacing", currentFile: (destinations[index] as NSString).lastPathComponent,
+                                          completedFiles: completedFiles, totalFiles: totalFiles, fraction: 1))
+                    try control.checkpoint()
+                }
+                guard let identity = info(stagedPaths[index]) else { throw DropFailure("A staged item became unavailable.") }
+                while renamex_np(stagedPaths[index], destinations[index], UInt32(RENAME_EXCL)) != 0 {
+                    let failure = errno
+                    if failure == EEXIST && collisionPolicy == .keepBoth {
+                        destinations[index] = try unusedDestination(for: paths[index])
+                        try control.checkpoint()
+                        continue
+                    }
+                    if failure == EEXIST && collisionPolicy == .ask { throw LocalConflict(paths: [destinations[index]]) }
+                    throw DropFailure("A destination changed during publication. Try again.")
+                }
+                published[index] = identity
             }
+            // This checkpoint is the commit boundary. Cancellation before it
+            // restores originals; afterward the accepted replacements are done.
+            try control.checkpoint()
+        } catch {
+            var recovered = true
+            // Published items can gain edits without changing their inode (for
+            // example, files added inside a folder). Retain any rolled-back
+            // publications rather than deleting a concurrent writer's work.
+            if !published.isEmpty { preserveStage = true }
+            for index in paths.indices.reversed() {
+                if let identity = published[index] {
+                    // Another writer may replace our published item while a
+                    // later item fails. Preserve their entry and our backup.
+                    if let current = info(destinations[index]), current.st_dev == identity.st_dev && current.st_ino == identity.st_ino {
+                        if renamex_np(destinations[index], stagedPaths[index], UInt32(RENAME_EXCL)) != 0 { recovered = false }
+                    } else if info(destinations[index]) != nil { recovered = false }
+                }
+                if let backup = backups[index], renamex_np(backup, destinations[index], UInt32(RENAME_EXCL)) != 0 { recovered = false }
+            }
+            if !recovered {
+                preserveStage = true
+                throw DropFailure("A destination changed during rollback. Original items are preserved for recovery in \(stage.path).")
+            }
+            if preserveStage {
+                if let conflict = error as? LocalConflict { throw LocalConflict(paths: conflict.paths, recoveryDirectory: stage.path) }
+                throw DropFailure(error.localizedDescription + " Originals restored; copies retained for recovery in \(stage.path).")
+            }
+            throw error
         }
         return destinations
     }
@@ -709,7 +822,8 @@ final class DropService {
         guard let requested = request["target"] as? [String: Any], let input = request["paths"] as? [String] else {
             throw DropFailure("A selected target and dropped paths are required.")
         }
-        let paths = try Self.validateSources(input)
+        let collisionPolicy = CollisionPolicy(rawValue: request["collision_policy"] as? String ?? "ask") ?? .ask
+        let paths = try Self.validateSources(input, allowDuplicateBasenames: collisionPolicy == .keepBoth)
         progress(DropProgress(phase: "Checking target", currentFile: "", completedFiles: 0, totalFiles: paths.count, fraction: nil))
         let (target, internalData) = try revalidate(requested)
         let destinations: [String]
@@ -718,8 +832,11 @@ final class DropService {
             destinations = try Self.copyLocal(paths, directory: cwd, control: control, progress: { event in
                 completionCount = event.totalFiles
                 self.progress(event)
-            })
-        } else if let args = internalData["ssh_args"] as? [String] { destinations = try copyRemote(paths, args: args) }
+            }, collisionPolicy: collisionPolicy)
+        } else if let args = internalData["ssh_args"] as? [String] {
+            _ = try Self.validateSources(input)
+            destinations = try copyRemote(paths, args: args)
+        }
         else { throw DropFailure("The selected target is unavailable.") }
         do {
             progress(DropProgress(phase: "Inserting paths", currentFile: "", completedFiles: completionCount,

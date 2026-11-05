@@ -1,5 +1,7 @@
 import AppKit
 
+func isProgressPreview() -> Bool { ["--preview-progress", "--preview-conflict", "--preview-error"].contains(where: CommandLine.arguments.contains) }
+
 let nativeFileTypes: [NSPasteboard.PasteboardType] = [.fileURL]
 
 // All drag state comes from AppKit destination callbacks on our own views.
@@ -88,7 +90,14 @@ func runUIStateTests() {
     precondition(sorted.compactMap { $0["id"] as? String } == ["ssh-a", "ssh-z", "local"])
     precondition(destinationTitle(["kind": "ssh", "display_name": "dev@host"]) == "dev@host:/tmp")
     precondition(TransferState.paused.active && TransferState.cancelling.active && !TransferState.complete.active)
-    print("Rex Drop native drop-routing, drag-lifecycle, ordering and task-state checks passed")
+    let task = TransferTask(target: ["display_name": "demo"], paths: ["/example/a"])
+    precondition(task.preferredHeight == 44 && task.collisionPolicy == .ask)
+    task.state = .conflict
+    precondition(task.preferredHeight == 44 && !task.state.active)
+    task.state = .failed
+    precondition(task.preferredHeight > 44)
+    print("Rex Drop native routing, drag lifecycle, ordering, compact rows and conflict-state checks passed")
+
     exit(0)
 }
 
@@ -204,7 +213,7 @@ final class TargetRow: NSView {
 }
 
 enum TransferState: String {
-    case queued = "Queued", running = "Sending", paused = "Paused", cancelling = "Cancelling", cancelled = "Cancelled", failed = "Failed", complete = "Complete"
+    case conflict = "Already exists", queued = "Queued", running = "Sending", paused = "Paused", cancelling = "Cancelling", cancelled = "Cancelled", failed = "Failed", complete = "Complete"
     var active: Bool { [.queued, .running, .paused, .cancelling].contains(self) }
 }
 final class TransferTask {
@@ -216,6 +225,9 @@ final class TransferTask {
     var phase = "Queued", currentFile = "", completedFiles = 0, totalFiles = 0
     var fraction: Double?
     var error = ""
+    var collisionPolicy = CollisionPolicy.ask
+    var conflicts: [String] = []
+    var preferredHeight: CGFloat { state == .failed ? 90 : 44 }
     var attempt = 0
     var started = false
     var operation: BlockOperation?
@@ -230,34 +242,43 @@ final class TaskCard: NSView {
     weak var owner: AppDelegate?
     let task: TransferTask
     let title = NSTextField(labelWithString: "")
-    let detail = NSTextField(labelWithString: "")
+    let detail = NSTextField(wrappingLabelWithString: "")
     let bar = NSProgressIndicator()
+    let status = NSImageView()
     let pause = NSButton(), cancel = NSButton()
+    let keepBoth = NSButton(title: "Keep Both", target: nil, action: nil)
+    let replace = NSButton(title: "Replace", target: nil, action: nil)
+    var cardHeight: NSLayoutConstraint!
     init(task: TransferTask, owner: AppDelegate) {
         self.task = task; self.owner = owner; super.init(frame: .zero)
-        wantsLayer = true; layer?.cornerRadius = 10
+        wantsLayer = true; layer?.cornerRadius = 9
         layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.025).cgColor
         layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.35).cgColor; layer?.borderWidth = 0.5
-        title.font = .systemFont(ofSize: 12, weight: .medium); title.lineBreakMode = .byTruncatingMiddle
-        detail.font = .systemFont(ofSize: 11); detail.textColor = .secondaryLabelColor
-        detail.maximumNumberOfLines = 3; detail.lineBreakMode = .byWordWrapping
-        detail.cell?.wraps = true; detail.isSelectable = true
+        title.font = .systemFont(ofSize: 11, weight: .medium); title.lineBreakMode = .byTruncatingMiddle
+        detail.font = .systemFont(ofSize: 11); detail.textColor = .systemOrange
+        detail.maximumNumberOfLines = 3; detail.lineBreakMode = .byWordWrapping; detail.isSelectable = true
         bar.style = .bar; bar.controlSize = .small; bar.minValue = 0; bar.maxValue = 1
-        for button in [pause, cancel] { button.isBordered = false; button.contentTintColor = .secondaryLabelColor; button.widthAnchor.constraint(equalToConstant: 22).isActive = true }
+        bar.widthAnchor.constraint(equalToConstant: 40).isActive = true
+        status.widthAnchor.constraint(equalToConstant: 13).isActive = true
+        status.heightAnchor.constraint(equalToConstant: 13).isActive = true
+        for button in [pause, cancel] { button.isBordered = false; button.contentTintColor = .secondaryLabelColor; button.widthAnchor.constraint(equalToConstant: 19).isActive = true }
+        for button in [keepBoth, replace] { button.bezelStyle = .rounded; button.controlSize = .small; button.font = .systemFont(ofSize: 10) }
+        keepBoth.target = self; keepBoth.action = #selector(keepAction); keepBoth.toolTip = "Keep all existing destination items; copy duplicates with numbered names"
+        replace.target = self; replace.action = #selector(replaceAction); replace.toolTip = "Replace all matching destination files and whole folders"
         pause.target = self; pause.action = #selector(primaryAction); cancel.target = self; cancel.action = #selector(secondaryAction)
-        let head = NSStackView(views: [title, NSView(), pause, cancel]); head.spacing = 5
+        let head = NSStackView(views: [title, NSView(), bar, status, pause, keepBoth, replace, cancel]); head.spacing = 5; head.alignment = .centerY
         title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        let column = NSStackView(views: [head, detail, bar]); column.orientation = .vertical; column.alignment = .leading; column.spacing = 7
+        let column = NSStackView(views: [head, detail]); column.orientation = .vertical; column.alignment = .leading; column.spacing = 6
         addSubview(column); column.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([heightAnchor.constraint(equalToConstant: 91), column.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12), column.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12), column.centerYAnchor.constraint(equalTo: centerYAnchor)])
-        for view in [head, detail, bar] { view.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true }
+        cardHeight = heightAnchor.constraint(equalToConstant: task.preferredHeight)
+        NSLayoutConstraint.activate([cardHeight, column.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10), column.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10), column.centerYAnchor.constraint(equalTo: centerYAnchor)])
+        for view in [head, detail] { view.widthAnchor.constraint(equalTo: column.widthAnchor).isActive = true }
         update()
     }
     required init?(coder: NSCoder) { fatalError() }
     override func hitTest(_ point: NSPoint) -> NSView? {
         let hit = super.hitTest(point)
         guard hit != nil, task.state == .complete, NSEvent.modifierFlags.contains(.command) else { return hit }
-        // Keep task controls independent from the card's destination shortcut.
         var view = hit
         while let current = view, current !== self {
             if current is NSButton { return hit }
@@ -266,42 +287,58 @@ final class TaskCard: NSView {
         return self
     }
     override func mouseUp(with event: NSEvent) {
-        if event.modifierFlags.contains(.command), bounds.contains(convert(event.locationInWindow, from: nil)) {
-            owner?.openDestination(task)
-        } else { super.mouseUp(with: event) }
+        if event.modifierFlags.contains(.command), bounds.contains(convert(event.locationInWindow, from: nil)) { owner?.openDestination(task) }
+        else { super.mouseUp(with: event) }
     }
-    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
-        task.state == .complete && event?.modifierFlags.contains(.command) == true
-    }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { task.state == .complete && event?.modifierFlags.contains(.command) == true }
     func update() {
+        cardHeight.constant = task.preferredHeight
         title.stringValue = (owner?.preview == true ? "Preview · " : "") + "\(task.summary) → \(task.destination)"
+        detail.isHidden = task.state != .failed
+        detail.stringValue = task.error.isEmpty ? "Transfer failed." : task.error
         let count = task.totalFiles > 0 ? " · \(task.completedFiles)/\(task.totalFiles)" : ""
-        detail.stringValue = task.state == .running ? ((task.currentFile.isEmpty ? task.phase : task.currentFile) + count) : task.state.rawValue
-        if task.state == .failed, !task.error.isEmpty { detail.stringValue = task.error }
-        detail.textColor = task.state == .failed ? .systemOrange : task.state == .complete ? .systemGreen : .secondaryLabelColor
-        toolTip = task.error.isEmpty ? task.paths.joined(separator: "\n") + "\n→ " + task.destination : task.error
+        let phase = task.currentFile.isEmpty ? task.phase : task.currentFile
+        toolTip = task.paths.joined(separator: "\n") + "\n→ " + task.destination + "\n" + task.state.rawValue + " · " + phase + count
+        if task.state == .conflict {
+            toolTip = "Already exists:\n" + task.conflicts.joined(separator: "\n")
+            if !task.error.isEmpty { toolTip = (toolTip ?? "") + "\n" + task.error }
+        }
+        if task.state == .failed { toolTip = task.error }
         if task.state == .complete { toolTip = (toolTip ?? "") + "\n⌘-click to open destination" }
-        let spinning = task.state == .running && task.fraction == nil
-        bar.isHidden = task.state == .failed
-        bar.isIndeterminate = spinning
-        if spinning { bar.startAnimation(nil) } else { bar.stopAnimation(nil); bar.doubleValue = task.state == .complete ? 1 : (task.fraction ?? 0) }
-        bar.alphaValue = task.state == .paused ? 0.4 : 1
-        let retry = [.failed, .cancelled].contains(task.state)
-        let paused = task.state == .paused
-        pause.isHidden = [.complete, .cancelling].contains(task.state)
+        bar.isHidden = ![.running, .queued].contains(task.state)
+        bar.isIndeterminate = task.state == .running && task.fraction == nil
+        if bar.isIndeterminate { bar.startAnimation(nil) } else { bar.stopAnimation(nil); bar.doubleValue = task.fraction ?? 0 }
+        let symbol: String
+        switch task.state {
+        case .complete: symbol = "checkmark.circle.fill"
+        case .failed: symbol = "exclamationmark.triangle.fill"
+        case .conflict: symbol = "doc.on.doc"
+        case .paused: symbol = "pause.circle"
+        case .cancelled, .cancelling: symbol = "xmark.circle"
+        default: symbol = "clock"
+        }
+        status.image = NSImage(systemSymbolName: symbol, accessibilityDescription: task.state.rawValue)
+        status.contentTintColor = task.state == .complete ? .systemGreen : task.state == .failed ? .systemOrange : .secondaryLabelColor
+        status.isHidden = task.state == .running || task.state == .queued
+        let retry = [.failed, .cancelled].contains(task.state), paused = task.state == .paused
+        pause.isHidden = [.complete, .conflict, .cancelling].contains(task.state)
         pause.image = NSImage(systemSymbolName: retry ? "arrow.clockwise" : paused ? "play.fill" : "pause.fill", accessibilityDescription: retry ? "Retry" : paused ? "Resume" : "Pause")
         pause.toolTip = retry ? "Retry transfer" : paused ? "Resume transfer" : "Pause transfer"
-        cancel.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: task.state.active ? "Cancel" : "Dismiss")
-        cancel.toolTip = task.state.active ? "Cancel transfer" : "Dismiss"
-        pause.isEnabled = owner?.preview != true
+        let canCancel = task.state.active || task.state == .conflict
+        cancel.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: canCancel ? "Cancel" : "Dismiss")
+        cancel.toolTip = canCancel ? "Cancel transfer" : "Dismiss"
+        keepBoth.isHidden = task.state != .conflict; replace.isHidden = task.state != .conflict
+        for button in [pause, cancel, keepBoth, replace] { button.isEnabled = owner?.preview != true }
         cancel.isEnabled = task.state != .cancelling && owner?.preview != true
     }
+    @objc func keepAction() { owner?.resolveConflict(task, policy: .keepBoth) }
+    @objc func replaceAction() { owner?.resolveConflict(task, policy: .replace) }
     @objc func primaryAction() { owner?.primaryAction(task) }
     @objc func secondaryAction() { owner?.secondaryAction(task) }
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPopoverDelegate {
-    let preview = CommandLine.arguments.contains("--preview") || CommandLine.arguments.contains("--preview-progress") || CommandLine.arguments.contains("--render-preview")
+    let preview = CommandLine.arguments.contains("--preview") || isProgressPreview() || CommandLine.arguments.contains("--render-preview")
     var panel: DropPanel!
     var statusItem: NSStatusItem!
     var icon: StatusDropView!
@@ -326,7 +363,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         makePanel(); makePopover(); makeMenu()
         if preview {
             populatePreview()
-            if CommandLine.arguments.contains("--preview-progress") { showProgress() } else { showDestinations(dragging: false) }
+            if isProgressPreview() { showProgress() } else { showDestinations(dragging: false) }
         } else {
             refresh()
             let timer = Timer(timeInterval: 5, repeats: true) { [weak self] _ in self?.refresh() }
@@ -390,7 +427,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             let card = TaskCard(task: task, owner: self); list.addArrangedSubview(card); cards[task.id] = card
             card.widthAnchor.constraint(equalTo: list.widthAnchor).isActive = true
         }
-        let height = CGFloat(min(430, max(91, tasks.count * 98 - 7)))
+        resizeProgressPanel()
+    }
+    func resizeProgressPanel() {
+        let height = min(CGFloat(430), max(CGFloat(44), tasks.reduce(CGFloat(0)) { $0 + $1.preferredHeight } + CGFloat(max(0, tasks.count - 1) * 7)))
+        guard listHeight.constant != height else { return }
         listHeight.constant = height
         let old = panel.frame
         panel.setFrame(NSRect(x: old.minX, y: old.maxY - height - 46, width: old.width, height: height + 46), display: true)
@@ -481,18 +522,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             ["id": "ssh-b", "display_name": "dev@staging", "destination_display": "dev@staging:/tmp", "kind": "ssh"],
             ["id": "local-a", "display_name": "website", "destination_display": "~/Projects/website", "kind": "local"]
         ])
-        if CommandLine.arguments.contains("--preview-progress") {
+        if isProgressPreview() {
             let first = TransferTask(target: targets[0], paths: ["/example/design-assets"])
             first.state = .running; first.currentFile = "hero-image.png"; first.completedFiles = 3; first.totalFiles = 8
             let second = TransferTask(target: targets[1], paths: ["/example/notes.md"]); second.state = .complete
-            tasks = [first, second]; renderContent()
+            tasks = [first, second]
+            if CommandLine.arguments.contains("--preview-conflict") {
+                let conflict = TransferTask(target: targets[2], paths: ["/example/logo.svg"])
+                conflict.state = .conflict; conflict.conflicts = ["~/Projects/website/logo.svg"]
+                tasks = [conflict]
+            }
+            if CommandLine.arguments.contains("--preview-error") {
+                first.state = .failed; first.error = "Permission denied while copying assets/logo.svg."
+                tasks = [first]
+            }
+            renderContent()
         }
     }
     func exportPreview(_ path: String) throws {
         makePanel(); makePopover(); populatePreview()
         let view: NSView
         let host: NSPanel
-        if CommandLine.arguments.contains("--preview-progress") { host = panel; view = panel.contentView! }
+        if isProgressPreview() { host = panel; view = panel.contentView! }
         else {
             view = popover.contentViewController!.view
             host = NSPanel(contentRect: NSRect(origin: .zero, size: popover.contentSize), styleMask: .borderless, backing: .buffered, defer: false)
@@ -505,12 +556,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         try data.write(to: URL(fileURLWithPath: path))
     }
     func start(_ task: TransferTask, retry: Bool) {
+        if retry { task.collisionPolicy = .ask }
+        task.conflicts = []
         task.attempt += 1; let attempt = task.attempt
         task.control = DropTaskControl(); task.started = false; task.state = .queued; task.error = ""; task.fraction = nil
         task.currentFile = ""; task.completedFiles = 0; task.totalFiles = 0
         task.openDestination = nil; task.copiedPaths = []
         updateTask(task)
-        let control = task.control, original = task.target, paths = task.paths
+        let control = task.control, original = task.target, paths = task.paths, policy = task.collisionPolicy
         let operation = BlockOperation { [weak self, weak task] in
             guard let task else { return }
             do {
@@ -538,13 +591,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
                         self?.updateTask(task)
                     }
                 })
-                let response = try service.transfer(["target": target, "paths": paths])
+                let response = try service.transfer(["target": target, "paths": paths, "collision_policy": policy.rawValue])
                 guard response["ok"] as? Bool == true else { throw DropFailure(response["error"] as? String ?? "Transfer failed.") }
                 DispatchQueue.main.async {
                     guard task.attempt == attempt else { return }
                     task.openDestination = response["open_destination"] as? [String: Any]
                     task.copiedPaths = response["paths"] as? [String] ?? []
                     task.state = .complete; self?.updateTask(task)
+                }
+            } catch let conflict as LocalConflict {
+                DispatchQueue.main.async {
+                    guard task.attempt == attempt else { return }
+                    task.state = control.isCancelled ? .cancelled : .conflict
+                    task.conflicts = conflict.paths
+                    task.error = conflict.recoveryDirectory.map { "Recovery copies: " + $0 } ?? ""
+                    self?.updateTask(task)
                 }
             } catch {
                 DispatchQueue.main.async {
@@ -558,7 +619,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         task.operation = operation
         queue.addOperation(operation)
     }
-    func updateTask(_ task: TransferTask) { cards[task.id]?.update() }
+    func updateTask(_ task: TransferTask) { cards[task.id]?.update(); resizeProgressPanel() }
     func openDestination(_ task: TransferTask) {
         guard !preview, task.state == .complete, !task.opening else { return }
         if task.target["kind"] as? String == "local" {
@@ -588,7 +649,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             }
         }
     }
+    func resolveConflict(_ task: TransferTask, policy: CollisionPolicy) {
+        guard !preview, task.state == .conflict, policy != .ask else { return }
+        task.collisionPolicy = policy
+        start(task, retry: false)
+    }
     func primaryAction(_ task: TransferTask) {
+
         switch task.state {
         case .queued, .running: task.control.pause(); task.state = .paused
         case .paused: task.control.resume(); task.state = task.started ? .running : .queued
@@ -598,6 +665,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         updateTask(task)
     }
     func secondaryAction(_ task: TransferTask) {
+        if task.state == .conflict { task.state = .cancelled; updateTask(task); return }
         if task.state.active {
             task.control.cancel()
             if task.started { task.state = .cancelling }
@@ -617,7 +685,7 @@ struct RexDropMain {
     static func main() {
         if CommandLine.arguments.contains("--self-test") { runUIStateTests() }
         // Preview mode stays fully isolated from live terminals, including CLI flags.
-        let preview = CommandLine.arguments.contains("--preview") || CommandLine.arguments.contains("--preview-progress") || CommandLine.arguments.contains("--render-preview")
+        let preview = CommandLine.arguments.contains("--preview") || isProgressPreview() || CommandLine.arguments.contains("--render-preview")
         if !preview && (CommandLine.arguments.contains("--targets") || CommandLine.arguments.contains("--transfer")) {
             let response: [String: Any]
             var status: Int32 = 0

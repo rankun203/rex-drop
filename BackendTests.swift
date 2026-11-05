@@ -213,6 +213,12 @@ private enum BackendTests {
             ("remote destination opens exact SSH connection and upload directory", openRemoteDestination),
             ("remote destination selects one identified local Rex app", selectOpenedRemoteWindow),
             ("remote destination rejects malformed captured metadata", rejectRemoteDestination),
+            ("local conflicts expose choices before copying", conflictChoices),
+            ("Keep Both reserves batch names and preserves originals", keepBoth),
+            ("Replace handles folders and symlinks and rejects source aliases", replaceEntries),
+            ("cancelling replacement restores original batch", cancelReplacement),
+            ("publication race restores siblings and preserves new writer", publicationRace),
+            ("rollback retains concurrent edits inside a published folder", rollbackFolderEdits),
         ]
         var failures = 0
         for (name, test) in tests {
@@ -780,6 +786,121 @@ private enum BackendTests {
             let fake = FakeRex()
             try expectThrows("unavailable") { try fake.service().openRemoteDestination(metadata) }
             try expect(fake.calls.isEmpty, "Malformed reopen metadata executed an external command")
+        }
+    }
+
+    static func conflictChoices() throws {
+        try temporary { root in
+            let source = root.appendingPathComponent("item"), destination = root.appendingPathComponent("destination")
+            try write("new", to: source); try mkdir(destination); try write("old", to: destination.appendingPathComponent("item"))
+            let fake = FakeRex(); fake.cwd = destination.path
+            let service = fake.service(), target = try service.targets()[0]
+            do {
+                _ = try service.transfer(["target": target, "paths": [source.path], "collision_policy": "unknown"])
+                throw TestFailure("Expected typed collision")
+            } catch let conflict as LocalConflict {
+                try expect(conflict.paths == [destination.appendingPathComponent("item").path], "Conflict omitted actual destination")
+            }
+            try expect(try String(contentsOf: destination.appendingPathComponent("item"), encoding: .utf8) == "old", "Ask modified original")
+            try expect(try FileManager.default.contentsOfDirectory(atPath: destination.path) == ["item"] && fake.sends.isEmpty, "Ask staged or inserted input")
+        }
+    }
+
+    static func keepBoth() throws {
+        try temporary { root in
+            let source = root.appendingPathComponent("source"), destination = root.appendingPathComponent("destination")
+            try mkdir(source); try mkdir(destination)
+            let first = source.appendingPathComponent("report.txt"), second = source.appendingPathComponent("report 2.txt")
+            try write("first", to: first); try write("second", to: second)
+            try write("old", to: destination.appendingPathComponent("report.txt"))
+            let folder = source.appendingPathComponent("folder.v1"); try mkdir(folder); try mkdir(destination.appendingPathComponent("folder.v1"))
+            let fake = FakeRex(); fake.cwd = destination.path
+            let service = fake.service(), target = try service.targets()[0]
+            let response = try service.transfer(["target": target, "paths": [first.path, second.path, folder.path], "collision_policy": "keepBoth"])
+            let names = (response["paths"] as? [String] ?? []).map { ($0 as NSString).lastPathComponent }
+            try expect(names == ["report 3.txt", "report 2.txt", "folder.v1 2"], "Keep Both consumed another incoming name or changed directory extension")
+            try expect(try String(contentsOf: destination.appendingPathComponent("report.txt"), encoding: .utf8) == "old", "Keep Both changed original")
+            let other = root.appendingPathComponent("other"); try mkdir(other); try write("duplicate", to: other.appendingPathComponent("report.txt"))
+            let duplicateNames = try DropService.copyLocal([first.path, other.appendingPathComponent("report.txt").path], directory: destination.path, collisionPolicy: .keepBoth).map { ($0 as NSString).lastPathComponent }
+            try expect(duplicateNames == ["report 4.txt", "report 5.txt"], "Keep Both failed duplicate source basenames")
+        }
+    }
+
+    static func replaceEntries() throws {
+        try temporary { root in
+            let source = root.appendingPathComponent("source"), destination = root.appendingPathComponent("destination")
+            try mkdir(source); try mkdir(destination)
+            let file = source.appendingPathComponent("item"), folder = source.appendingPathComponent("folder"), linkFile = source.appendingPathComponent("link")
+            try write("new", to: file); try mkdir(folder); try write("nested", to: folder.appendingPathComponent("new")); try write("replacement", to: linkFile)
+            try write("old", to: destination.appendingPathComponent("item")); try mkdir(destination.appendingPathComponent("folder"))
+            try write("old child", to: destination.appendingPathComponent("folder/old"))
+            let outside = root.appendingPathComponent("outside"); try write("untouched", to: outside)
+            try FileManager.default.createSymbolicLink(atPath: destination.appendingPathComponent("link").path, withDestinationPath: outside.path)
+            _ = try DropService.copyLocal([file.path, folder.path, linkFile.path], directory: destination.path, collisionPolicy: .replace)
+            try expect(try String(contentsOf: destination.appendingPathComponent("item"), encoding: .utf8) == "new", "Replace omitted file")
+            try expect(try FileManager.default.contentsOfDirectory(atPath: destination.appendingPathComponent("folder").path) == ["new"], "Replace merged nonempty folders")
+            try expect(try String(contentsOf: outside, encoding: .utf8) == "untouched", "Replace followed destination symlink")
+            try expectThrows("itself") { _ = try DropService.copyLocal([destination.appendingPathComponent("item").path], directory: destination.path, collisionPolicy: .replace) }
+            try FileManager.default.removeItem(at: destination.appendingPathComponent("item"))
+            try FileManager.default.linkItem(at: file, to: destination.appendingPathComponent("item"))
+            try expectThrows("itself") { _ = try DropService.copyLocal([file.path], directory: destination.path, collisionPolicy: .replace) }
+            try FileManager.default.removeItem(at: destination.appendingPathComponent("item"))
+            try FileManager.default.createSymbolicLink(atPath: destination.appendingPathComponent("item").path, withDestinationPath: file.path)
+            try expectThrows("itself") { _ = try DropService.copyLocal([file.path], directory: destination.path, collisionPolicy: .replace) }
+            try expectThrows("containing") { _ = try DropService.copyLocal([folder.path, destination.appendingPathComponent("folder/new").path], directory: destination.path, collisionPolicy: .replace) }
+        }
+    }
+
+    static func cancelReplacement() throws {
+        try temporary { root in
+            let source = root.appendingPathComponent("source"), destination = root.appendingPathComponent("destination")
+            try mkdir(source); try mkdir(destination)
+            for name in ["a", "b"] { try write("new " + name, to: source.appendingPathComponent(name)); try write("old " + name, to: destination.appendingPathComponent(name)) }
+            let control = DropTaskControl()
+            try expectThrows("cancel") {
+                _ = try DropService.copyLocal([source.appendingPathComponent("a").path, source.appendingPathComponent("b").path], directory: destination.path, control: control, progress: { event in
+                    if event.phase == "Replacing" && event.currentFile == "b" { control.cancel() }
+                }, collisionPolicy: .replace)
+            }
+            for name in ["a", "b"] { try expect(try String(contentsOf: destination.appendingPathComponent(name), encoding: .utf8) == "old " + name, "Cancellation lost an original") }
+        }
+    }
+
+    static func publicationRace() throws {
+        try temporary { root in
+            let source = root.appendingPathComponent("source"), destination = root.appendingPathComponent("destination")
+            try mkdir(source); try mkdir(destination)
+            for name in ["a", "b"] { try write("new", to: source.appendingPathComponent(name)) }
+            do {
+                _ = try DropService.copyLocal([source.appendingPathComponent("a").path, source.appendingPathComponent("b").path], directory: destination.path, progress: { event in
+                    if event.phase == "Publishing" && event.currentFile == "b" { try! write("other writer", to: destination.appendingPathComponent("b")) }
+                })
+                throw TestFailure("Expected publication conflict")
+            } catch let conflict as LocalConflict { try expect(conflict.recoveryDirectory != nil, "Rollback copies omitted recovery path") }
+            try expect(!FileManager.default.fileExists(atPath: destination.appendingPathComponent("a").path), "Race left sibling published before choice")
+            try expect(try String(contentsOf: destination.appendingPathComponent("b"), encoding: .utf8) == "other writer", "Race overwrote concurrent writer")
+        }
+    }
+
+    static func rollbackFolderEdits() throws {
+        try temporary { root in
+            let source = root.appendingPathComponent("source"), destination = root.appendingPathComponent("destination")
+            try mkdir(source); try mkdir(destination)
+            let folder = source.appendingPathComponent("folder"), oldFolder = destination.appendingPathComponent("folder")
+            try mkdir(folder); try write("new", to: folder.appendingPathComponent("copied")); try mkdir(oldFolder); try write("original", to: oldFolder.appendingPathComponent("old"))
+            let second = source.appendingPathComponent("second"); try write("second", to: second)
+            let control = DropTaskControl()
+            try expectThrows("recovery") {
+                _ = try DropService.copyLocal([folder.path, second.path], directory: destination.path, control: control, progress: { event in
+                    if event.phase == "Publishing" && event.currentFile == "second" {
+                        try! write("user work", to: oldFolder.appendingPathComponent("user-work")); control.cancel()
+                    }
+                }, collisionPolicy: .replace)
+            }
+            try expect(try String(contentsOf: oldFolder.appendingPathComponent("old"), encoding: .utf8) == "original", "Rollback lost original folder")
+            let recovery = try FileManager.default.contentsOfDirectory(at: destination, includingPropertiesForKeys: nil).first { $0.lastPathComponent.hasPrefix(".rex-drop-") }
+            guard let recovery else { throw TestFailure("Concurrent directory edits lost without recovery folder") }
+            try expect(try String(contentsOf: recovery.appendingPathComponent("item-0/user-work"), encoding: .utf8) == "user work", "Rollback deleted edits inside published folder")
         }
     }
 }
